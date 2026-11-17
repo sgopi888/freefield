@@ -6,9 +6,10 @@
     "smooth",
     "upscale",
     "upscale-video",
+    "upscale-video-fast",
     "video-remove-bg"
   ],
-  "download_gb": 5.13,
+  "download_gb": 5.2,
   "needs_hf_token": false,
   "custom_nodes": [],
   "models": [
@@ -60,6 +61,18 @@
       "license": "MIT",
       "used_by": [
         "depth-map"
+      ]
+    },
+    {
+      "repo": "ai-forever/Real-ESRGAN",
+      "file": "RealESRGAN_x2.pth",
+      "dir": "upscale_models",
+      "gb": 0.07,
+      "name": "RealESRGAN_x2.pth",
+      "gated": false,
+      "license": "BSD-3-Clause",
+      "used_by": [
+        "upscale-video-fast"
       ]
     },
     {

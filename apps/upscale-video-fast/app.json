@@ -1,0 +1,33 @@
+{
+  "$schema": "../../schema/app.schema.json",
+  "id": "upscale-video-fast",
+  "name": "Upscale Video (fast)",
+  "section": "video",
+  "pack": "upscale",
+  "status": "ready",
+  "summary": "Real-ESRGAN doubles the resolution of a clip frame by frame: much faster than SeedVR2, less restoration.",
+  "workflow": "workflow.api.json",
+  "inputs": [
+    {
+      "id": "clip",
+      "type": "video",
+      "label": "Clip",
+      "required": true,
+      "limits": { "max_mb": 200, "seconds": [1, 20] },
+      "bind": [{ "node": "1", "field": "file" }]
+    }
+  ],
+  "outputs": [{ "node": "6", "type": "video", "label": "Upscaled" }],
+  "models": [
+    {
+      "repo": "ai-forever/Real-ESRGAN",
+      "file": "RealESRGAN_x2.pth",
+      "dir": "upscale_models",
+      "gb": 0.07,
+      "phase": "all",
+      "license": "BSD-3-Clause"
+    }
+  ],
+  "credits": ["Real-ESRGAN by Xintao Wang et al., weights by ai-forever (BSD-3-Clause)"],
+  "test": { "clip": "test/clip.mp4" }
+}
