@@ -1,0 +1,10 @@
+.git
+.env
+.venv
+node_modules
+out
+tools
+test
+infra
+*.md
+!docs/*.md

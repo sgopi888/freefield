@@ -1,0 +1,11 @@
+# Hosted Freefield: `docker compose up --build -d`, nginx proxies to 127.0.0.1:3030 (see docs/accounts.md).
+# .env holds COMFY_BASE_URL, FREEFIELD_TOKEN and the FREEFIELD_* limits; data (history, freefield.db) in ./data.
+services:
+  freefield:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:3030:3000"
+    volumes:
+      - ./data:/data
