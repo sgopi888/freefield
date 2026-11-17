@@ -95,3 +95,22 @@ test("probe refuses clips with streams other than video and audio", { skip: !has
   execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=2", "-i", srt, "-c:v", "libx264", "-c:s", "srt", src]);
   await assert.rejects(probe(src), /only video and audio/);
 });
+
+test("GPU time per piece falls back to how long it was seen running when the backend reports no timings", { skip: !hasFfmpeg && "no ffmpeg" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ff-chunk-"));
+  const src = join(dir, "in.mp4");
+  execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=2", "-c:v", "libx264", src]);
+  const app = { id: "upscale-video-fast", inputs: [{ id: "clip", type: "video" }], outputs: [{ node: "6", type: "video" }] } as unknown as App;
+  const r = await runChunked({
+    app, values: {}, inputId: "clip", input: src, workDir: join(dir, "work"), seconds: 2,
+    submit: async (_a, v) => {
+      const job = {
+        id: "j", status: "running", error: null, startedAt: null, completedAt: null, cancel: async () => undefined,
+        outputs: [{ name: "o.mp4", type: "video", nodeId: "6", contentType: "video/mp4", toBytes: async () => (v.clip as { bytes: Uint8Array }).bytes }],
+        wait: async () => { await new Promise((ok) => setTimeout(ok, 1200)); job.status = "succeeded"; },
+      };
+      return job;
+    },
+  });
+  assert.ok(r.gpuSeconds >= 1 && r.gpuSeconds < 2, `gpuSeconds ${r.gpuSeconds}`);
+});

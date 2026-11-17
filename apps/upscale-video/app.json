@@ -77,5 +77,10 @@
   ],
   "test": {
     "clip": "test/clip.mp4"
-  }
+  },
+  "modes": [
+    "upscale-video-fast",
+    "upscale-video"
+  ],
+  "mode_label": "Best \u00b7 SeedVR2"
 }

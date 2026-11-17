@@ -51,5 +51,10 @@
   ],
   "test": {
     "clip": "test/clip.mp4"
-  }
+  },
+  "modes": [
+    "upscale-video-fast",
+    "upscale-video"
+  ],
+  "mode_label": "Fast \u00b7 Real-ESRGAN"
 }

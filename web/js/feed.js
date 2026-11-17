@@ -77,11 +77,25 @@ export function statusText(e) {
   if (e.status === "running") {
     const p = e.progress;
     let s = t("status.running");
-    if (p?.step && p?.steps) s += ` · ${t("status.step", { a: p.step, b: p.steps })}`;
+    if (p?.node === "piece" && p?.steps) s += ` · ${t("status.piece", { a: p.step + 1 > p.steps ? p.steps : p.step + 1, b: p.steps })}`;
+    else if (p?.step && p?.steps) s += ` · ${t("status.step", { a: p.step, b: p.steps })}`;
     else if (p?.value > 0) s += ` · ${Math.round(p.value * 100)}%`;
+    const left = timeLeft(e);
+    if (left) s += ` · ${t("status.left", { t: fmtSeconds(left) })}`;
     return s;
   }
   return t(`status.${e.status}`);
+}
+
+/** Rough seconds left for a running entry, from how fast it went so far; null until there is enough to go on. */
+function timeLeft(e) {
+  const p = e.progress;
+  if (!p || !e.started) return null;
+  const elapsed = (Date.now() - new Date(e.started).getTime()) / 1000;
+  // pieces of a long clip: time per finished piece × pieces left (the first piece includes any GPU start-up)
+  const done = p.node === "piece" ? (p.steps ? p.step / p.steps : 0) : p.value;
+  if (!(done >= 0.05) || done >= 1 || elapsed < 5) return null;
+  return Math.max(5, Math.round(elapsed * (1 - done) / done));
 }
 
 /** The shape a placeholder should have: from width/height or an "a:b" aspect value. */

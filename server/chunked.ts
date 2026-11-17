@@ -84,13 +84,21 @@ export async function runChunked(o: {
     const bytes = new Uint8Array(readFileSync(join(o.workDir, part)));
     const job = await o.submit(o.app, { ...o.values, [o.inputId]: { bytes, name: part, type: "video/mp4" } });
     o.onJob?.(job);
-    if (!["succeeded", "failed", "canceled", "expired"].includes(job.status)) {
-      await waitPatiently(job, 6 * 3600 * 1000, 10 * 60 * 1000, (m) => console.warn(`[chunked] piece ${i + 1}: ${m}`));
+    // the backend may not report timings: time the piece from when it is seen running (queueing is not GPU time)
+    let runningAt: number | null = job.status === "running" ? Date.now() : null;
+    const watch = setInterval(() => { if (runningAt === null && job.status === "running") runningAt = Date.now(); }, 1000);
+    try {
+      if (!["succeeded", "failed", "canceled", "expired"].includes(job.status)) {
+        await waitPatiently(job, 6 * 3600 * 1000, 10 * 60 * 1000, (m) => console.warn(`[chunked] piece ${i + 1}: ${m}`));
+      }
+    } finally {
+      clearInterval(watch);
     }
     if (job.status !== "succeeded") {
       throw new Error(`piece ${i + 1} of ${parts.length}: ${job.error?.message || job.status}`);
     }
     if (job.startedAt && job.completedAt) gpuSeconds += (job.completedAt.getTime() - job.startedAt.getTime()) / 1000;
+    else if (runningAt !== null) gpuSeconds += (Date.now() - runningAt) / 1000;
     const wanted = o.app.outputs[0]?.node;
     const out = job.outputs.find((x) => x.nodeId === wanted) ?? job.outputs.find((x) => x.type === "video") ?? job.outputs[0];
     if (!out) throw new Error(`piece ${i + 1} of ${parts.length}: the job returned no video`);
