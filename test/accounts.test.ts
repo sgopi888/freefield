@@ -99,6 +99,25 @@ test("10 failed attempts per username or per IP in 15 minutes lock out with 429"
   assert.ok(a.login("alice", "correct horse", "10.0.0.1").token);
 });
 
+test("per-account limits: 50 failed logins from any IPs, but only 5 wrong reset answers", () => {
+  const a = fresh();
+  a.signup(SIGNUP);
+  for (let i = 0; i < 50; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.2.${i >> 8}.${i & 255}`), 401);
+  throwsStatus(() => a.login("alice", "correct horse", "10.3.0.1"), 429);
+  a.signup({ ...SIGNUP, username: "carol" });
+  for (let i = 0; i < 5; i++) throwsStatus(() => a.reset({ username: "carol", answer: `guess${i}`, password: "new password" }, `10.4.0.${i}`), 401);
+  throwsStatus(() => a.reset({ username: "carol", answer: "rex", password: "new password" }, "10.5.0.1"), 429);
+  assert.ok(a.login("carol", "correct horse", "10.5.0.1").token);   // the reset lock does not block login
+});
+
+test("IPv6 addresses in one /64 count as one client", () => {
+  const a = fresh();
+  a.signup(SIGNUP);
+  for (let i = 0; i < 10; i++) throwsStatus(() => a.login(`ghost${i}`, "wrong pass", `2001:db8:1:2::${i + 1}`), 401);
+  throwsStatus(() => a.login("alice", "correct horse", "2001:db8:1:2:ffff::9"), 429);
+  assert.ok(a.login("alice", "correct horse", "2001:db8:1:3::1").token);
+});
+
 test("API keys: shown once, authenticate as Bearer, listed without the secret, revocable", () => {
   const a = fresh();
   const u = a.signup(SIGNUP);

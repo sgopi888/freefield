@@ -24,7 +24,21 @@ const SESSION = "ff_session";
 const SESSION_DAYS = 30;
 const USERNAME = /^[a-z0-9_-]{3,32}$/;
 const LOCK_WINDOW_MS = 15 * 60 * 1000;
-const LOCK_AFTER = 10;
+const LOCK_AFTER = 10;   // per (username, client) and per client
+// per account, from any client: high for passwords (a typo storm must not lock the owner out), low for secret-question
+// answers, which have far less entropy than a password
+const ACCOUNT_LOCK = { login: 50, reset: 5 } as const;
+
+/** The client as a lock key: IPv4 as is (also when IPv4-mapped), IPv6 by its /64, the block one subscriber gets. */
+export function clientKey(ip: string): string {
+  const v4 = /^(?:::ffff:)?(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (v4 || !ip.includes(":")) return v4 ? v4[1] : ip;
+  const [head, tail = ""] = ip.toLowerCase().split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : h;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
 // verified against when the username does not exist, so a wrong name costs as long as a wrong password
 const DUMMY_HASH = hashSecret("not a real password");
 
@@ -146,11 +160,11 @@ export class Accounts {
 
   login(username: unknown, password: unknown, ip: string): { token: string; user: User } {
     const name = typeof username === "string" ? username.trim().toLowerCase() : "";
-    this.throttle(name, ip);
+    this.throttle("login", name, ip);
     const r = this.row(name);
     const ok = verifySecret(typeof password === "string" ? password : "", r ? String(r.pw_hash) : DUMMY_HASH) && Boolean(r);
     if (!ok) {
-      this.fail(name, ip);
+      this.fail("login", name, ip);
       throw new AuthError("wrong username or password", 401);
     }
     return { token: this.newSession(Number(r!.id)), user: toUser(r!) };
@@ -167,13 +181,13 @@ export class Accounts {
 
   reset(body: { username?: unknown; answer?: unknown; password?: unknown }, ip: string): void {
     const name = typeof body.username === "string" ? body.username.trim().toLowerCase() : "";
-    this.throttle(name, ip);
+    this.throttle("reset", name, ip);
     const pw = checkPassword(body.password);
     const r = this.row(name);
     const answer = typeof body.answer === "string" ? normAnswer(body.answer) : "";
     const ok = verifySecret(answer, r?.answer_hash ? String(r.answer_hash) : DUMMY_HASH) && Boolean(r?.answer_hash);
     if (!ok) {
-      this.fail(name, ip);
+      this.fail("reset", name, ip);
       throw new AuthError("that answer does not match", 401);
     }
     this.db.prepare("UPDATE users SET pw_hash = ? WHERE id = ?").run(hashSecret(pw), r!.id as number);
@@ -218,21 +232,26 @@ export class Accounts {
     return token;
   }
 
-  // brute-force lock: LOCK_AFTER failures per (username, IP) or per IP within LOCK_WINDOW_MS. Not per username alone,
-  // so nobody can lock a user out by failing on purpose from elsewhere; scrypt keeps guessing from many IPs slow.
+  // brute-force lock within LOCK_WINDOW_MS: LOCK_AFTER failures per (username, client) or per client, and
+  // ACCOUNT_LOCK[kind] per account from anywhere (guessing spread over many addresses still stops).
   // shortcut: in memory, so a restart clears it; move to the db if the server ever runs as several processes
-  private throttle(name: string, ip: string): void {
+  private lockKeys(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): [string, number][] {
+    const c = clientKey(ip);
+    return [[`pair:${name}|${c}`, LOCK_AFTER], [`ip:${c}`, LOCK_AFTER], [`${kind}:${name}`, ACCOUNT_LOCK[kind]]];
+  }
+
+  private throttle(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): void {
     const since = this.now().getTime() - LOCK_WINDOW_MS;
-    for (const k of [`u:${name}|${ip}`, `ip:${ip}`]) {
+    for (const [k, limit] of this.lockKeys(kind, name, ip)) {
       const recent = (this.failures.get(k) ?? []).filter((t) => t > since);
       this.failures.set(k, recent);
-      if (recent.length >= LOCK_AFTER) throw new AuthError("too many failed attempts; try again in 15 minutes", 429);
+      if (recent.length >= limit) throw new AuthError("too many failed attempts; try again in 15 minutes", 429);
     }
   }
 
-  private fail(name: string, ip: string): void {
+  private fail(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): void {
     const t = this.now().getTime();
-    for (const k of [`u:${name}|${ip}`, `ip:${ip}`]) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
+    for (const [k] of this.lockKeys(kind, name, ip)) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
   }
 
   /** A new password ends every way in: sessions and API keys (a reset after a compromise must lock the intruder out). */
