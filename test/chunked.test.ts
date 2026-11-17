@@ -29,6 +29,7 @@ test("a long clip is split, each piece run, then joined with the original audio"
   const app = { id: "upscale-video-fast", inputs: [{ id: "clip", type: "video" }], outputs: [{ node: "6", type: "video" }] } as unknown as App;
   const submitted: number[] = [];
   const progress: string[] = [];
+  const etas: (number | null)[] = [];
   let t = 0;
   const result = await runChunked({
     app, values: { clip: { bytes: new Uint8Array(), name: "in.mov", type: "video/quicktime" } }, inputId: "clip",
@@ -43,10 +44,13 @@ test("a long clip is split, each piece run, then joined with the original audio"
         wait: async () => undefined, cancel: async () => undefined,
       };
     },
-    onProgress: (done, total) => progress.push(`${done}/${total}`),
+    onProgress: (done, total, eta) => { progress.push(`${done}/${total}`); etas.push(eta); },
   });
   assert.equal(submitted.length, 3);
   assert.deepEqual(progress, ["0/3", "1/3", "2/3", "3/3"]);
+  assert.ok(etas[0]! > 0, "an estimate before any piece is done, from the clip and the app's speed");
+  assert.ok(etas[1]! >= etas[2]!, "the estimate does not grow as pieces finish (the fake GPU is instant)");
+  assert.equal(etas[3], 0);
   assert.equal(result.gpuSeconds, 4.5);
   const out = await probe(result.file);
   assert.ok(Math.abs(out.duration - 9) < 0.3, `joined duration ${out.duration}`);

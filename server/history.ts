@@ -69,7 +69,8 @@ export type HistoryOptions = {
 type Live = {
   job?: JobLike;
   cancelRequested?: boolean;
-  progress: { value: number; step: number | null; steps: number | null; node: string | null } | null;
+  // eta: seconds left as estimated at eta_at (ms), for runs that know better than the progress % (long clips)
+  progress: { value: number; step: number | null; steps: number | null; node: string | null; eta?: number | null; eta_at?: number } | null;
   queue: number | null;
   preview: { bytes: Uint8Array; type: string; n: number } | null;
 };
@@ -270,9 +271,9 @@ export class History {
     if (live.cancelRequested) void job.cancel().catch(() => {});
   }
 
-  pieces(entry: Entry, done: number, total: number): void {
+  pieces(entry: Entry, done: number, total: number, eta: number | null = null): void {
     const live = this.live.get(entry.id);
-    if (live) live.progress = { value: total ? done / total : 0, step: done, steps: total, node: "piece" };
+    if (live) live.progress = { value: total ? done / total : 0, step: done, steps: total, node: "piece", eta, eta_at: Date.now() };
   }
 
   cancelRequested(entry: Entry): boolean {

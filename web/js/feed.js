@@ -80,17 +80,17 @@ export function statusText(e) {
     if (p?.node === "piece" && p?.steps) s += ` · ${t("status.piece", { a: p.step + 1 > p.steps ? p.steps : p.step + 1, b: p.steps })}`;
     else if (p?.step && p?.steps) s += ` · ${t("status.step", { a: p.step, b: p.steps })}`;
     else if (p?.value > 0) s += ` · ${Math.round(p.value * 100)}%`;
-    const left = timeLeft(e);
-    if (left) s += ` · ${t("status.left", { t: fmtSeconds(left) })}`;
     return s;
   }
   return t(`status.${e.status}`);
 }
 
-/** Rough seconds left for a running entry, from how fast it went so far; null until there is enough to go on. */
-function timeLeft(e) {
+/** Rough seconds left for a running entry: the server's estimate (long clips) counted down, else from the progress %. */
+export function timeLeft(e) {
   const p = e.progress;
-  if (!p || !e.started) return null;
+  if (e.status !== "running" || !p) return null;
+  if (typeof p.eta === "number") return Math.max(0, Math.round(p.eta - (Date.now() - (p.eta_at ?? Date.now())) / 1000));
+  if (!e.started) return null;
   const elapsed = (Date.now() - new Date(e.started).getTime()) / 1000;
   // pieces of a long clip: time per finished piece × pieces left (the first piece includes any GPU start-up)
   const done = p.node === "piece" ? (p.steps ? p.step / p.steps : 0) : p.value;
@@ -132,17 +132,26 @@ function pendingCard(e) {
   const bar = el("i");
   const barBox = el("div", { class: "bar indet" }, bar);
   const title = el("b");
+  const eta = el("span", { class: "eta", hidden: true });
+  const file = e.inputs?.find((i) => i.type === "video" || i.type === "image" || i.type === "audio")?.name;
   const prev = el("img", { class: "preview", alt: "", hidden: true });
   const node = el("div", { class: `rcard pending ${item.type}` },
     el("div", { class: "shimmer" }), prev,
     el("button", { class: "mini stop", type: "button", title: t("act.cancel"), "aria-label": t("act.cancel"),
       onclick: (ev) => { ev.stopPropagation(); feed.cancel(e.id).catch((err) => toast(err.message, { error: true })); } }, icon("stop")),
-    el("div", { class: "state" }, title, barBox,
-      el("small", {}, `${app?.name ?? e.app} · `, el("span", { dataset: { since: e.created } }, fmtSeconds((Date.now() - Date.parse(e.created)) / 1000)))));
+    el("div", { class: "state" }, title, eta, barBox,
+      el("small", { title: file || "" }, `${app?.name ?? e.app} · `, file ? `${file} · ` : "",
+        el("span", { dataset: { since: e.created } }, fmtSeconds((Date.now() - Date.parse(e.created)) / 1000)))));
   const ar = aspectOf(e);
   if (ar) node.style.aspectRatio = ar;
   const update = (fresh) => {
     title.textContent = statusText(fresh);
+    const left = timeLeft(fresh);
+    eta.hidden = left === null;
+    if (left !== null) {
+      const at = new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      eta.textContent = left > 0 ? t("status.eta", { t: fmtSeconds(left), at }) : t("status.finishing");
+    }
     const p = fresh.progress?.value;
     barBox.classList.toggle("indet", !(p > 0));
     bar.style.width = p > 0 ? `${Math.round(p * 100)}%` : "";

@@ -217,7 +217,7 @@ function startRun(app: App, values: Values, preset?: string, owner?: string, use
           app, values, inputId: long.inputId, input: long.path, workDir,
           submit: async (a, v) => { const job = await getRunner().submit(a, v, preset); contact(); return job; },
           onJob: (job) => history.attach(entry, job as { id: string; cancel(): Promise<unknown> }),
-          onProgress: (done, total) => history.pieces(entry, done, total),
+          onProgress: (done, total, eta) => history.pieces(entry, done, total, eta),
           isCanceled: () => history.cancelRequested(entry),
         });
         history.complete(entry, r.file, r.gpuSeconds);

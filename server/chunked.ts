@@ -25,6 +25,9 @@ const MAX_PIECES = 120;
 const LOCAL_ONLY = ["-protocol_whitelist", "file"];
 const CONTAINERS = /^(mov,mp4,m4a,3gp,3g2,mj2|matroska,webm)$/;
 const MINUTE = 60 * 1000;
+// GPU seconds per megapixel-frame of input, measured on an L40S (10 s 1280x704 clip: Real-ESRGAN 85 s, SeedVR2
+// 1363 s): the time-left estimate until the first piece has finished and its real time can be used instead
+const SECONDS_PER_MPX_FRAME: Record<string, number> = { "upscale-video-fast": 0.4, "upscale-video": 6.3 };
 
 export type Probe = { width: number; height: number; fps: number; duration: number; audio: boolean };
 
@@ -64,11 +67,12 @@ type Submit = (app: App, values: Values) => Promise<JobLike | Omit<JobLike, "eve
 
 export async function runChunked(o: {
   app: App; values: Values; inputId: string; input: string; workDir: string; submit: Submit;
-  seconds?: number; onJob?: (job: { cancel(): Promise<unknown> }) => void; onProgress?: (done: number, total: number) => void;
+  seconds?: number; onJob?: (job: { cancel(): Promise<unknown> }) => void; onProgress?: (done: number, total: number, etaSeconds: number | null) => void;
   isCanceled?: () => boolean;
 }): Promise<{ file: string; gpuSeconds: number }> {
   mkdirSync(o.workDir, { recursive: true });
-  const seconds = o.seconds ?? chunkSeconds(await probe(o.input));
+  const meta = await probe(o.input);
+  const seconds = o.seconds ?? chunkSeconds(meta);
   // re-encode (near-lossless) with a keyframe at every cut, so pieces are exactly `seconds` long and join cleanly
   await run("ffmpeg", ["-v", "error", "-y", ...LOCAL_ONLY, "-i", o.input, "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
     "-pix_fmt", "yuv420p", "-force_key_frames", `expr:gte(t,n_forced*${seconds})`, "-f", "segment",
@@ -78,7 +82,16 @@ export async function runChunked(o: {
 
   let gpuSeconds = 0;
   const done: string[] = [];
-  o.onProgress?.(0, parts.length);
+  // time left: real seconds per finished piece once there is one, before that the app's measured speed
+  const rate = SECONDS_PER_MPX_FRAME[o.app.id];
+  const guess = rate ? seconds * meta.fps * (meta.width * meta.height / 1e6) * rate : null;
+  const began = Date.now();
+  const eta = (n: number) => {
+    const left = parts.length - n;
+    const per = n ? (Date.now() - began) / 1000 / n : guess;
+    return left === 0 ? 0 : per === null ? null : Math.round(per * left);
+  };
+  o.onProgress?.(0, parts.length, eta(0));
   for (const [i, part] of parts.entries()) {
     if (o.isCanceled?.()) throw new Error("canceled");
     const bytes = new Uint8Array(readFileSync(join(o.workDir, part)));
@@ -105,7 +118,7 @@ export async function runChunked(o: {
     const file = `up-${String(i + 1).padStart(4, "0")}.mp4`;
     writeFileSync(join(o.workDir, file), await out.toBytes());
     done.push(file);
-    o.onProgress?.(i + 1, parts.length);
+    o.onProgress?.(i + 1, parts.length, eta(i + 1));
   }
 
   writeFileSync(join(o.workDir, "list.txt"), done.map((f) => `file '${f}'\n`).join(""));
