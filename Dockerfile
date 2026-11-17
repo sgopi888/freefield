@@ -10,9 +10,9 @@ COPY packs ./packs
 COPY schema ./schema
 COPY lab ./lab
 COPY docs ./docs
-# 0.0.0.0 inside the container; publish the port on 127.0.0.1 only and put nginx in front (docker-compose.yml)
-ENV FREEFIELD_HOST=0.0.0.0 FREEFIELD_OUT=/data PORT=3000
+# listens on 127.0.0.1 (server default): run with the host network so nginx is a loopback peer (docker-compose.yml)
+ENV FREEFIELD_OUT=/data PORT=3030
 RUN mkdir -p /data && chown node:node /data
 USER node
-EXPOSE 3000
+EXPOSE 3030
 CMD ["node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "server/server.ts"]

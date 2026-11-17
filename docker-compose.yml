@@ -1,11 +1,15 @@
 # Hosted Freefield: `docker compose up --build -d`, nginx proxies to 127.0.0.1:3030 (see docs/accounts.md).
-# .env holds COMFY_BASE_URL, FREEFIELD_TOKEN and the FREEFIELD_* limits; data (history, freefield.db) in ./data.
+# Host network on purpose: the server binds 127.0.0.1 only, sees nginx as a loopback peer (so X-Real-IP is trusted
+# and per-client login limits work) and keeps its Host allowlist (FREEFIELD_ALLOWED_HOSTS) on.
+# .env holds COMFY_BASE_URL, FREEFIELD_TOKEN, FREEFIELD_ALLOWED_HOSTS and the limits; data in ./data.
 services:
   freefield:
     build: .
     restart: unless-stopped
+    network_mode: host
     env_file: .env
-    ports:
-      - "127.0.0.1:3030:3000"
+    environment:
+      FREEFIELD_HOST: 127.0.0.1
+      PORT: "3030"
     volumes:
       - ./data:/data
