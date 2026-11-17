@@ -114,6 +114,8 @@ export async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   let body = null;
   try { body = await res.json(); } catch { /* empty body */ }
+  // accounts on (server/accounts.ts) and not signed in: the account page signs in or creates one
+  if (res.status === 401 && body?.login && globalThis.location) location.assign(body.login);
   if (!res.ok) throw new ApiError(body?.error || `${res.status} ${res.statusText}`, res.status);
   return body;
 }

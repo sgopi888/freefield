@@ -19,6 +19,12 @@
 // FREEFIELD_MAX_ACTIVE cap the runs (429 past them), lab marks become read-only and uploads are capped at
 // FREEFIELD_MAX_UPLOAD_MB, and each visitor sees only their own runs. Hosted or not, requests from other sites are
 // refused (guard.ts foreign()). FREEFIELD_OUT moves out/ (history, the run count), FREEFIELD_HOST the listening address.
+// Accounts (server/accounts.ts, FREEFIELD_ACCOUNTS=1): every /api route needs a session cookie or an API key, except
+//   POST   /api/auth/signup | login | logout | reset    JSON bodies; signup and login set the ff_session cookie
+//   GET    /api/auth/me | question?username=
+//   GET|POST /api/keys, DELETE /api/keys/:id            the caller's API keys (Authorization: Bearer ff_…)
+//   GET    /api/usage                                  runs, GPU seconds and $ per day/month (admins: every user)
+// Runs are capped per user per day (admins excepted); /api/jobs and lab marks become admin only.
 // web/examples/ holds one example per app, written by lab/publish.py; /api/apps carries it along.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
@@ -28,6 +34,7 @@ import { explainSubmitError, InputError, resolveValues, Runner, type Values } fr
 import { History } from "./history.ts";
 import { Flags } from "./flags.ts";
 import { DOOR_HTML, foreign, Guard } from "./guard.ts";
+import { Accounts, AuthError, type User } from "./accounts.ts";
 
 const root = repoRoot();
 const { apps, problems } = loadRegistry(root);
@@ -45,6 +52,7 @@ const getRunner = () => (runner ??= new Runner());
 const draftsAllowed = process.env.FREEFIELD_DRAFTS === "1";
 const outDir = process.env.FREEFIELD_OUT || join(root, "out");
 const guard = Guard.fromEnv(join(outDir, "limits.json"));
+const accounts = process.env.FREEFIELD_ACCOUNTS === "1" ? Accounts.fromEnv(join(outDir, "freefield.db")) : null;
 const maxUploadMb = Number(process.env.FREEFIELD_MAX_UPLOAD_MB || (guard.hosted ? 100 : 0));
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.FREEFIELD_HOST || "127.0.0.1";
@@ -185,8 +193,9 @@ async function jobView(id: string) {
 }
 
 /** Submit in the background; the entry tells the UI how it goes. */
-function startRun(app: App, values: Values, preset?: string, owner?: string) {
+function startRun(app: App, values: Values, preset?: string, owner?: string, user?: User | null) {
   const entry = history.start(app, values, preset, owner);
+  if (user) accounts?.recordRun(user, entry.id, app.id);
   void (async () => {
     try {
       const job = await getRunner().submit(app, values, preset);
@@ -198,6 +207,8 @@ function startRun(app: App, values: Values, preset?: string, owner?: string) {
       console.error(`[${app.id}] ${message}`);
       history.fail(entry, message);
     }
+    // shortcut: runs resumed after a server restart keep their usage row at status "started" with no GPU seconds
+    if (user) accounts?.finishRun(entry.id, entry.seconds, entry.status);
   })();
   return history.view(entry);
 }
@@ -251,6 +262,63 @@ function wake() {
     .catch((e) => { if (waking === started) waking = { ...started, error: (e as Error).message }; });
 }
 
+const LOOPBACK_PEERS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+/** The client's address: X-Forwarded-For only when the peer is a local proxy (nginx), so clients cannot fake it. */
+function clientIp(req: IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? "";
+  const fwd = req.headers["x-forwarded-for"];
+  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0].trim();
+  return LOOPBACK_PEERS.has(peer) && first ? first : peer;
+}
+const overHttps = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https";
+const readJson = async (req: IncomingMessage) =>
+  (await (await toRequest(req)).json().catch(() => ({}))) as Record<string, unknown>;
+
+/** /api/auth/*: the only API routes that answer without a session or key. */
+async function authRoute(acc: Accounts, req: IncomingMessage, res: ServerResponse, action: string | undefined, url: URL) {
+  const secure = overHttps(req);
+  if (req.method === "POST" && action === "signup") {
+    const user = acc.signup(await readJson(req));
+    res.setHeader("set-cookie", acc.sessionCookie(acc.startSession(user), secure));
+    return send(res, 201, { username: user.username, admin: user.admin });
+  }
+  if (req.method === "POST" && action === "login") {
+    const body = await readJson(req);
+    const { token, user } = acc.login(body.username, body.password, clientIp(req));
+    res.setHeader("set-cookie", acc.sessionCookie(token, secure));
+    return send(res, 200, { username: user.username, admin: user.admin });
+  }
+  if (req.method === "POST" && action === "logout") {
+    acc.logout(acc.sessionToken(req.headers.cookie));
+    res.setHeader("set-cookie", acc.clearCookie(secure));
+    return send(res, 200, { ok: true });
+  }
+  if (req.method === "POST" && action === "reset") {
+    acc.reset(await readJson(req), clientIp(req));
+    return send(res, 200, { ok: true });
+  }
+  if (req.method === "GET" && action === "question") {
+    const question = acc.question(url.searchParams.get("username"));
+    return question ? send(res, 200, { question }) : send(res, 404, { error: "no such user, or no secret question set" });
+  }
+  if (req.method === "GET" && action === "me") {
+    const user = acc.authenticate(req.headers.cookie, req.headers.authorization);
+    return user ? send(res, 200, { username: user.username, admin: user.admin }) : send(res, 401, { error: "not signed in" });
+  }
+  return send(res, 404, { error: "not found" });
+}
+
+/** /api/keys and /api/usage, for a signed-in user. */
+async function accountRoute(acc: Accounts, user: User, req: IncomingMessage, res: ServerResponse, area: string, id?: string) {
+  if (area === "usage" && req.method === "GET") return send(res, 200, acc.usage(user));
+  if (area === "keys" && req.method === "GET" && !id) return send(res, 200, { keys: acc.keys(user) });
+  if (area === "keys" && req.method === "POST" && !id) return send(res, 201, acc.createKey(user, (await readJson(req)).label));
+  if (area === "keys" && req.method === "DELETE" && id) {
+    return acc.revokeKey(user, Number(id)) ? send(res, 200, { revoked: Number(id) }) : send(res, 404, { error: "unknown key" });
+  }
+  return send(res, 404, { error: "not found" });
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://local");
@@ -271,9 +339,17 @@ const server = createServer(async (req, res) => {
         return res.end(DOOR_HTML);
       }
     }
+    let user: User | null = null;
+    if (accounts && parts[0] === "api") {
+      if (parts[1] === "auth") return await authRoute(accounts, req, res, parts[2], url);
+      user = accounts.authenticate(req.headers.cookie, req.headers.authorization);
+      if (!user) return send(res, 401, { error: "sign in first", login: "/account.html" });
+      if (parts[1] === "keys" || parts[1] === "usage") return await accountRoute(accounts, user, req, res, parts[1], parts[2]);
+    }
     const visitor = guard.visitor(req.headers.cookie);   // hosted: this browser's id; locally undefined (no filter)
     if (visitor.setCookie) res.setHeader("set-cookie", visitor.setCookie);
-    const me = visitor.id;
+    const me = user ? `user:${user.id}` : visitor.id;    // with accounts, each user sees only their own runs
+    const adminOnly = Boolean(accounts) && !user?.admin;
     if (parts[0] === "api") {
       const [, area, id, sub, arg] = parts;
       if (req.method === "GET" && area === "apps" && parts.length === 2) {
@@ -282,7 +358,7 @@ const server = createServer(async (req, res) => {
           || Number(b.status === "ready") - Number(a.status === "ready") || a.name.localeCompare(b.name));
         const examples = loadExamples();
         return send(res, 200, { apps: sorted.map((a) => ({ ...publicApp(a), example: examples[a.id] ?? null })), drafts: draftsAllowed,
-          hosted: guard.hosted });
+          hosted: guard.hosted, accounts: Boolean(accounts) });
       }
       if (req.method === "GET" && area === "apps" && sub === "workflow") {
         // the app's ComfyUI workflow (API format) as a file: drag it onto ComfyUI's canvas to open the app as nodes
@@ -298,13 +374,13 @@ const server = createServer(async (req, res) => {
         if (!app) return send(res, 404, { error: "unknown app" });
         if (!app.workflowPath) throw new InputError(`${app.id} has no workflow yet`);
         if (!runnable(app)) throw new InputError(`${app.id} is a draft; start the server with FREEFIELD_DRAFTS=1 to run it anyway`);
-        const refused = guard.refuse(activeRuns());
+        const refused = (user && accounts?.refuseRun(user)) || guard.refuse(activeRuns());
         if (refused) return send(res, 429, { error: refused });
         admitting++;
         let view;
         try {
           const { values, preset } = await readValues(app, await toRequest(req));
-          view = startRun(app, resolveValues(app, values), preset, me);
+          view = startRun(app, resolveValues(app, values), preset, me, user);
         } finally {
           admitting--;
         }
@@ -340,7 +416,7 @@ const server = createServer(async (req, res) => {
       if (area === "flags" && parts.length === 2) {
         if (req.method === "GET") return send(res, 200, { mediocre: flags.list() });
         if (req.method === "POST") {
-          if (guard.hosted) return send(res, 403, { error: "lab marks are read-only on the hosted demo" });
+          if (guard.hosted || adminOnly) return send(res, 403, { error: "lab marks are read-only here" });
           const body = await (await toRequest(req)).json().catch(() => null) as { key?: unknown; mediocre?: unknown; note?: unknown } | null;
           if (!body || typeof body.key !== "string" || typeof body.mediocre !== "boolean") throw new InputError("expected JSON { key, mediocre, note? }");
           try {
@@ -352,6 +428,7 @@ const server = createServer(async (req, res) => {
       }
       // the raw job view reaches any backend job by id, past the history's per-visitor view: local scripts only
       if (area === "jobs" && guard.hosted) return send(res, 404, { error: "not found" });
+      if (area === "jobs" && adminOnly) return send(res, 403, { error: "admins only" });
       if (req.method === "GET" && area === "jobs" && parts.length === 3) {
         return send(res, 200, await jobView(id));
       }
@@ -372,7 +449,7 @@ const server = createServer(async (req, res) => {
     if (file.startsWith(webRoot) && existsSync(file) && statSync(file).isFile()) return sendFile(req, res, file);
     return send(res, 404, { error: "not found" });
   } catch (e) {
-    const status = e instanceof InputError ? 400 : 500;
+    const status = e instanceof AuthError ? e.status : e instanceof InputError ? 400 : 500;
     if (status === 500) console.error(e);
     return send(res, status, { error: (e as Error).message });
   }
@@ -382,4 +459,5 @@ const server = createServer(async (req, res) => {
 history.resume(async (jobId) => getRunner().jobs().get(jobId));
 
 server.listen(port, host, () => console.log(`freefield on http://${host}:${port} (${apps.length} apps)`
-  + (guard.passcode ? " · passcode required" : "") + (guard.maxRunsPerDay ? ` · ${guard.maxRunsPerDay} runs a day` : "")));
+  + (guard.passcode ? " · passcode required" : "") + (guard.maxRunsPerDay ? ` · ${guard.maxRunsPerDay} runs a day` : "")
+  + (accounts ? ` · accounts on (${accounts.runsPerDay} runs/user/day)` : "")));

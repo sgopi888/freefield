@@ -6,7 +6,7 @@ import { store } from "./util.js";
 const en = {
   "boot.error": "Is `npm run serve` running?", "status.ready": "Ready", "unit.gb": "GB", "unit.mb": "MB", "unit.s": "s",
   "nav.explore": "Explore", "nav.image": "Image", "nav.video": "Video", "nav.audio": "Audio", "nav.apps": "Apps", "nav.library": "Library",
-  "nav.vram": "VRAM map", "nav.create": "Create", "nav.lang": "Language", "nav.menu": "Menu",
+  "nav.vram": "VRAM map", "nav.create": "Create", "nav.account": "Account", "nav.lang": "Language", "nav.menu": "Menu",
   "menu.features": "Features", "menu.models": "Models", "menu.used": "{n} apps", "menu.used1": "1 app",
   "tag.featured": "Featured", "tag.new": "New", "tag.draft": "Draft", "tag.top": "Top",
   "gpu.none": "No backend", "gpu.asleep": "GPU asleep", "gpu.waking": "Waking GPU · {s}s", "gpu.ready": "GPU ready", "gpu.failed": "Wake failed",
@@ -96,7 +96,7 @@ const en = {
 const es = {
   "boot.error": "¿Está ejecutándose `npm run serve`?", "status.ready": "Listo", "unit.gb": "GB", "unit.mb": "MB", "unit.s": "s",
   "nav.explore": "Explorar", "nav.image": "Imagen", "nav.video": "Video", "nav.audio": "Audio", "nav.apps": "Apps", "nav.library": "Biblioteca",
-  "nav.vram": "Mapa de VRAM", "nav.create": "Crear", "nav.lang": "Idioma", "nav.menu": "Menú",
+  "nav.vram": "Mapa de VRAM", "nav.create": "Crear", "nav.account": "Cuenta", "nav.lang": "Idioma", "nav.menu": "Menú",
   "menu.features": "Funciones", "menu.models": "Modelos", "menu.used": "{n} apps", "menu.used1": "1 app",
   "tag.featured": "Destacado", "tag.new": "Nuevo", "tag.draft": "Borrador", "tag.top": "Top",
   "gpu.none": "Sin backend", "gpu.asleep": "GPU dormida", "gpu.waking": "Despertando GPU · {s}s", "gpu.ready": "GPU lista", "gpu.failed": "No despertó",
@@ -186,7 +186,7 @@ const es = {
 const ru = {
   "boot.error": "Запущен ли `npm run serve`?", "status.ready": "Готово", "unit.gb": "ГБ", "unit.mb": "МБ", "unit.s": "с",
   "nav.explore": "Обзор", "nav.image": "Изображения", "nav.video": "Видео", "nav.audio": "Аудио", "nav.apps": "Приложения", "nav.library": "Библиотека",
-  "nav.vram": "Карта видеопамяти", "nav.create": "Создать", "nav.lang": "Язык", "nav.menu": "Меню",
+  "nav.vram": "Карта видеопамяти", "nav.create": "Создать", "nav.account": "Аккаунт", "nav.lang": "Язык", "nav.menu": "Меню",
   "menu.features": "Возможности", "menu.models": "Модели", "menu.used": { one: "{n} приложение", few: "{n} приложения", many: "{n} приложений", other: "{n} приложения" }, "menu.used1": "1 приложение",
   "tag.featured": "Рекомендуем", "tag.new": "Новинка", "tag.draft": "Черновик", "tag.top": "Лучшее",
   "gpu.none": "Нет бэкенда", "gpu.asleep": "GPU спит", "gpu.waking": "Запуск GPU · {s} с", "gpu.ready": "GPU готов", "gpu.failed": "Не удалось запустить GPU",

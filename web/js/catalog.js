@@ -7,6 +7,7 @@ import { localizeApp } from "./app-locale.js";
 export let apps = [];
 export const byId = new Map();
 export let draftsAllowed = false;
+export let accounts = false;   // the server has user accounts: the top bar links to /account.html
 export let hosted = false;   // the server runs as a hosted demo (passcode, run cap): lab marks are read-only
 
 const DEV = new URLSearchParams(location.search).has("dev");   // ?dev shows the smoke-test apps
@@ -15,6 +16,7 @@ export async function loadCatalog() {
   const d = await api("/api/apps");
   draftsAllowed = Boolean(d.drafts);
   hosted = Boolean(d.hosted);
+  accounts = Boolean(d.accounts);
   apps = d.apps.filter((a) => DEV || !a.id.startsWith("smoke")).map((a) => localizeApp(a, () => lang));
   byId.clear();
   for (const a of apps) byId.set(a.id, a);

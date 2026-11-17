@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Freefield account</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='1' y='1' width='30' height='30' rx='9' fill='%23e8ff5a'/%3E%3Cpath d='M8 11.5h16M8 16.5h9M8 21.5h12' stroke='%2311140a' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='22.5' cy='16.5' r='1.9' fill='%2311140a'/%3E%3C/svg%3E">
+<!-- Accounts (server/accounts.ts): sign in, create an account, reset by secret question; then usage and API keys. -->
+<style>
+:root{--bg:#09090a;--panel:#151517;--line:#2e2e33;--text:#f4f4f2;--muted:#9b9ba3;--lime:#e8ff5a;--ink:#11140a;--bad:#ff7a7a}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}
+main{width:min(760px,calc(100vw - 32px));margin:48px auto}
+h1{margin:0 0 4px;font-size:24px}h2{margin:32px 0 12px;font-size:17px}
+p{margin:0}.muted{color:var(--muted)}.err{color:var(--bad);min-height:1.5em;margin-top:8px}
+form{display:grid;gap:12px;width:min(340px,100%);margin-top:20px}
+label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:inherit}
+button{cursor:pointer}button.primary{background:var(--lime);color:var(--ink);border:0;font-weight:600}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+.tabs{display:flex;gap:8px;margin-top:20px;flex-wrap:wrap}.tabs button[aria-selected=true]{border-color:var(--lime)}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+.stat b{display:block;font-size:20px}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:500}.wrap{overflow-x:auto}
+code{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:2px 6px;word-break:break-all}
+.newkey{background:var(--panel);border:1px solid var(--lime);border-radius:10px;padding:12px;margin-top:12px}
+a{color:var(--lime)}
+</style>
+</head>
+<body>
+<main id="app"><p class="muted">Loading…</p></main>
+<script type="module">
+const $ = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; };
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const app = document.getElementById("app");
+
+async function api(path, opts = {}) {
+  const init = { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } };
+  if (init.body && typeof init.body !== "string") init.body = JSON.stringify(init.body);
+  const res = await fetch(path, init);
+  let body = null;
+  try { body = await res.json(); } catch { /* empty */ }
+  if (!res.ok) throw Object.assign(new Error(body?.error || `${res.status} ${res.statusText}`), { status: res.status });
+  return body;
+}
+const money = (v) => v === null || v === undefined ? "—" : `$${v.toFixed(v < 1 ? 3 : 2)}`;
+const mins = (s) => s === null || s === undefined ? "—" : s < 120 ? `${Math.round(s)} s` : `${(s / 60).toFixed(1)} min`;
+
+// ---------------------------------------------------------------- signed out: sign in / create / reset
+function signedOut(tab = "login") {
+  app.replaceChildren($(`
+    <h1>Freefield</h1><p class="muted">Sign in to generate. Beta: a few runs per day per account.</p>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="login" aria-selected="${tab === "login"}">Sign in</button>
+      <button role="tab" data-tab="signup" aria-selected="${tab === "signup"}">Create account</button>
+      <button role="tab" data-tab="reset" aria-selected="${tab === "reset"}">Forgot password</button>
+    </div><div id="pane"></div>`));
+  app.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => signedOut(b.dataset.tab));
+  const pane = app.querySelector("#pane");
+  if (tab === "login") {
+    pane.replaceChildren($(`<form>
+      <label>Username<input name="username" autocomplete="username" required autofocus></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary">Sign in</button><p class="err" role="alert"></p></form>`));
+    submit(pane, (f) => api("/api/auth/login", { method: "POST", body: f }).then(home));
+  } else if (tab === "signup") {
+    pane.replaceChildren($(`<form>
+      <label>Username (3–32: a–z, 0–9, _ or -)<input name="username" autocomplete="username" pattern="[A-Za-z0-9_\\-]{3,32}" required autofocus></label>
+      <label>Password (at least 8 characters)<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Secret question (for a password reset — there is no email)<input name="question" placeholder="e.g. Name of my first teacher?" required></label>
+      <label>Answer<input name="answer" autocomplete="off" required></label>
+      <button class="primary">Create account</button><p class="err" role="alert"></p></form>`));
+    submit(pane, (f) => api("/api/auth/signup", { method: "POST", body: f }).then(home));
+  } else {
+    pane.replaceChildren($(`<form id="q">
+      <label>Username<input name="username" autocomplete="username" required autofocus></label>
+      <button class="primary">Show my question</button><p class="err" role="alert"></p></form>`));
+    submit(pane, async (f) => {
+      const { question } = await api(`/api/auth/question?username=${encodeURIComponent(f.username)}`);
+      pane.replaceChildren($(`<form>
+        <p>${esc(question)}</p>
+        <input type="hidden" name="username" value="${esc(f.username)}">
+        <label>Answer<input name="answer" autocomplete="off" required autofocus></label>
+        <label>New password (at least 8 characters)<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+        <button class="primary">Set new password</button><p class="err" role="alert"></p></form>`));
+      submit(pane, async (g) => {
+        await api("/api/auth/reset", { method: "POST", body: g });
+        await api("/api/auth/login", { method: "POST", body: { username: g.username, password: g.password } });
+        home();
+      });
+    });
+  }
+}
+
+function submit(scope, run) {
+  const form = scope.querySelector("form");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = form.querySelector(".err");
+    err.textContent = "";
+    form.querySelector("button.primary").disabled = true;
+    try { await run(Object.fromEntries(new FormData(form))); }
+    catch (x) { err.textContent = x.message; }
+    finally { const b = form.querySelector("button.primary"); if (b) b.disabled = false; }
+  };
+}
+
+// ---------------------------------------------------------------- signed in: usage and keys
+async function home() {
+  let u;
+  try { u = await api("/api/usage"); }
+  catch (e) { if (e.status === 401) return signedOut(); app.textContent = e.message; return; }
+  const cap = u.runs_per_day === null ? "no daily cap (admin)" : `${Math.max(0, u.runs_per_day - u.today.runs)} of ${u.runs_per_day} runs left today`;
+  app.replaceChildren($(`
+    <div class="row"><div><h1>${esc(u.username)}${u.admin ? " · admin" : ""}</h1><p class="muted">${cap} · resets 00:00 UTC</p></div>
+      <div class="row"><a href="/">Open the studio →</a><button id="out">Sign out</button></div></div>
+    <h2>Usage</h2>
+    <div class="stats">
+      <div class="stat"><span class="muted">Today</span><b>${u.today.runs} runs</b>${mins(u.today.gpu_seconds)} GPU · ${money(u.today.usd)}</div>
+      <div class="stat"><span class="muted">This month</span><b>${u.month.runs} runs</b>${mins(u.month.gpu_seconds)} GPU · ${money(u.month.usd)}</div>
+    </div>
+    <p class="muted" style="margin-top:8px">${u.usd_per_hour ? `$ = GPU time × $${u.usd_per_hour}/h. Cold starts and idle time are not counted per user.` : "No GPU price set (FREEFIELD_GPU_USD_PER_HOUR), so no dollar estimate."}</p>
+    ${u.users ? `<h2>All users</h2><div class="wrap"><table><thead><tr><th>User</th><th>Today</th><th>Month runs</th><th>Month GPU</th><th>Month $</th></tr></thead><tbody>
+      ${u.users.map((x) => `<tr><td>${esc(x.username)}${x.admin ? " (admin)" : ""}</td><td>${x.today.runs}</td><td>${x.month.runs}</td><td>${mins(x.month.gpu_seconds)}</td><td>${money(x.month.usd)}</td></tr>`).join("")}
+      </tbody></table></div>` : ""}
+    <h2>Recent runs</h2>
+    ${u.runs.length ? `<div class="wrap"><table><thead><tr><th>When (UTC)</th><th>App</th><th>Status</th><th>GPU</th><th>$</th></tr></thead><tbody>
+      ${u.runs.map((r) => `<tr><td>${esc(r.created.slice(0, 16).replace("T", " "))}</td><td>${esc(r.app)}</td><td>${esc(r.status)}</td><td>${mins(r.gpu_seconds)}</td><td>${money(r.usd)}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="muted">No runs yet.</p>`}
+    <h2>API keys</h2>
+    <p class="muted">For scripts: send <code>Authorization: Bearer ff_…</code>. A key is shown once; runs made with it count as yours.</p>
+    <form id="newkey" style="grid-template-columns:1fr auto;width:min(480px,100%)">
+      <input name="label" placeholder="Label, e.g. yt-daily-stream" aria-label="Key label" maxlength="60">
+      <button class="primary">Create key</button><p class="err" role="alert" style="grid-column:1/-1"></p></form>
+    <div id="shown"></div><div id="keys"></div>`));
+  app.querySelector("#out").onclick = async () => { await api("/api/auth/logout", { method: "POST" }); signedOut(); };
+  submit(app.querySelector("#newkey").parentNode, async (f) => {
+    const k = await api("/api/keys", { method: "POST", body: f });
+    app.querySelector("#shown").replaceChildren($(`<div class="newkey"><p>Copy this key now — it will not be shown again:</p><p style="margin-top:8px"><code>${esc(k.key)}</code></p></div>`));
+    app.querySelector("#newkey").reset();
+    keys();
+  });
+  keys();
+}
+
+async function keys() {
+  const box = app.querySelector("#keys");
+  const { keys } = await api("/api/keys");
+  if (!keys.length) return box.replaceChildren($(`<p class="muted" style="margin-top:12px">No keys yet.</p>`));
+  box.replaceChildren($(`<div class="wrap" style="margin-top:12px"><table><thead><tr><th>Key</th><th>Label</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>
+    ${keys.map((k) => `<tr><td><code>${esc(k.prefix)}…</code></td><td>${esc(k.label ?? "")}</td><td>${esc(k.created.slice(0, 10))}</td><td>${esc(k.last_used?.slice(0, 16).replace("T", " ") ?? "never")}</td><td><button data-revoke="${k.id}">Revoke</button></td></tr>`).join("")}
+    </tbody></table></div>`));
+  box.querySelectorAll("[data-revoke]").forEach((b) => b.onclick = async () => { await api(`/api/keys/${b.dataset.revoke}`, { method: "DELETE" }); keys(); });
+}
+
+home();
+</script>
+</body>
+</html>
