@@ -23,7 +23,7 @@ const MAX_PIECES = 120;
 // uploads are untrusted: ffmpeg may read local files only (no http, no playlists pointing elsewhere), and only real
 // video containers are accepted (an HLS or concat "video" could make ffmpeg fetch URLs or read server files)
 const LOCAL_ONLY = ["-protocol_whitelist", "file"];
-const CONTAINERS = /^(mov,mp4,m4a,3gp,3g2,mj2|matroska,webm|avi)$/;
+const CONTAINERS = /^(mov,mp4,m4a,3gp,3g2,mj2|matroska,webm)$/;
 const MINUTE = 60 * 1000;
 
 export type Probe = { width: number; height: number; fps: number; duration: number; audio: boolean };
@@ -33,6 +33,9 @@ export async function probe(file: string): Promise<Probe> {
     "-show_format", file], { timeout: MINUTE });
   const d = JSON.parse(stdout) as { streams: Record<string, string | number>[]; format: { duration?: string; format_name?: string } };
   if (!CONTAINERS.test(d.format.format_name ?? "")) throw new Error(`not a supported video (${d.format.format_name ?? "unknown"})`);
+  if (d.streams.some((s) => s.codec_type !== "video" && s.codec_type !== "audio")) {
+    throw new Error("the clip may hold only video and audio streams (no subtitles or data)");
+  }
   const v = d.streams.find((s) => s.codec_type === "video");
   if (!v) throw new Error("the clip has no video stream");
   const [num, den] = String(v.avg_frame_rate || v.r_frame_rate || "24/1").split("/").map(Number);
@@ -67,7 +70,7 @@ export async function runChunked(o: {
   mkdirSync(o.workDir, { recursive: true });
   const seconds = o.seconds ?? chunkSeconds(await probe(o.input));
   // re-encode (near-lossless) with a keyframe at every cut, so pieces are exactly `seconds` long and join cleanly
-  await run("ffmpeg", ["-v", "error", "-y", ...LOCAL_ONLY, "-i", o.input, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
+  await run("ffmpeg", ["-v", "error", "-y", ...LOCAL_ONLY, "-i", o.input, "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
     "-pix_fmt", "yuv420p", "-force_key_frames", `expr:gte(t,n_forced*${seconds})`, "-f", "segment",
     "-segment_time", String(seconds), "-reset_timestamps", "1", join(o.workDir, "part-%04d.mp4")], { maxBuffer: 1 << 24, timeout: 60 * MINUTE });
   const parts = readdirSync(o.workDir).filter((f) => /^part-\d{4}\.mp4$/.test(f)).sort();
@@ -101,6 +104,6 @@ export async function runChunked(o: {
   const file = join(o.workDir, "joined.mp4");
   await run("ffmpeg", ["-v", "error", "-y", ...LOCAL_ONLY, "-f", "concat", "-safe", "0", "-i", join(o.workDir, "list.txt"),
     ...LOCAL_ONLY, "-i", o.input,
-    "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", file], { maxBuffer: 1 << 24, timeout: 30 * MINUTE });
+    "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", file], { maxBuffer: 1 << 24, timeout: 30 * MINUTE });
   return { file, gpuSeconds: Math.round(gpuSeconds * 10) / 10 };
 }

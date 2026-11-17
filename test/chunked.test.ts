@@ -86,3 +86,12 @@ test("probe refuses playlists and other non-video formats (no network or file re
   writeFileSync(fake, "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nhttp://169.254.169.254/latest/meta-data\n#EXT-X-ENDLIST\n");
   await assert.rejects(probe(fake), /not a supported video|Invalid data|Protocol|not on whitelist/i);
 });
+
+test("probe refuses clips with streams other than video and audio", { skip: !hasFfmpeg && "no ffmpeg" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ff-chunk-"));
+  const srt = join(dir, "s.srt");
+  writeFileSync(srt, "1\n00:00:00,000 --> 00:00:01,000\nhello\n");
+  const src = join(dir, "with-subs.mkv");
+  execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=2", "-i", srt, "-c:v", "libx264", "-c:s", "srt", src]);
+  await assert.rejects(probe(src), /only video and audio/);
+});
