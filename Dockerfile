@@ -1,8 +1,11 @@
 # Freefield web UI + API (server/server.ts). The GPU backend stays on Modal; this image needs Node and ffmpeg.
 FROM node:22-slim
 # ffmpeg/ffprobe: long clips are cut into pieces and joined (server/chunked.ts)
-# (time-outs and retries: a stalled mirror connection hung the first build for 20+ minutes)
-RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update \
+# (time-outs and retries: a stalled mirror connection hung the first build for 20+ minutes; DEBIAN_MIRROR because
+# deb.debian.org gave ~100 KB/s from the VPS and ftp.us.debian.org ~900 KB/s)
+ARG DEBIAN_MIRROR=ftp.us.debian.org
+RUN sed -i "s#deb.debian.org/debian\$#${DEBIAN_MIRROR}/debian#" /etc/apt/sources.list.d/debian.sources \
+ && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update \
  && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y --no-install-recommends ffmpeg \
  && apt-get clean
 WORKDIR /app
