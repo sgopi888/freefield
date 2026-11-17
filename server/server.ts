@@ -195,7 +195,6 @@ async function jobView(id: string) {
 /** Submit in the background; the entry tells the UI how it goes. */
 function startRun(app: App, values: Values, preset?: string, owner?: string, user?: User | null) {
   const entry = history.start(app, values, preset, owner);
-  if (user) accounts?.recordRun(user, entry.id, app.id);
   void (async () => {
     try {
       const job = await getRunner().submit(app, values, preset);
@@ -263,12 +262,15 @@ function wake() {
 }
 
 const LOOPBACK_PEERS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-/** The client's address: X-Forwarded-For only when the peer is a local proxy (nginx), so clients cannot fake it. */
+/**
+ * The client's address. Behind nginx (the peer is loopback) it is X-Real-IP, which nginx sets from $remote_addr and
+ * so cannot be supplied by the client; X-Forwarded-For is not used because its first entry comes from the client.
+ */
 function clientIp(req: IncomingMessage): string {
   const peer = req.socket.remoteAddress ?? "";
-  const fwd = req.headers["x-forwarded-for"];
-  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(",")[0].trim();
-  return LOOPBACK_PEERS.has(peer) && first ? first : peer;
+  const real = req.headers["x-real-ip"];
+  const ip = (Array.isArray(real) ? real[0] : real)?.trim();
+  return LOOPBACK_PEERS.has(peer) && ip ? ip : peer;
 }
 const overHttps = (req: IncomingMessage) => req.headers["x-forwarded-proto"] === "https";
 const readJson = async (req: IncomingMessage) =>
@@ -374,13 +376,18 @@ const server = createServer(async (req, res) => {
         if (!app) return send(res, 404, { error: "unknown app" });
         if (!app.workflowPath) throw new InputError(`${app.id} has no workflow yet`);
         if (!runnable(app)) throw new InputError(`${app.id} is a draft; start the server with FREEFIELD_DRAFTS=1 to run it anyway`);
-        const refused = (user && accounts?.refuseRun(user)) || guard.refuse(activeRuns());
+        const refused = guard.refuse(activeRuns());
         if (refused) return send(res, 429, { error: refused });
+        const slot = user ? accounts!.reserveRun(user, app.id) : null;   // throws 429 past the user's daily cap
         admitting++;
         let view;
         try {
           const { values, preset } = await readValues(app, await toRequest(req));
           view = startRun(app, resolveValues(app, values), preset, me, user);
+          if (slot) accounts!.bindRun(slot, view.id);
+        } catch (e) {
+          if (slot) accounts!.releaseRun(slot);   // bad input or upload: the run never started
+          throw e;
         } finally {
           admitting--;
         }

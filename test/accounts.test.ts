@@ -76,8 +76,10 @@ test("reset by secret question: wrong answer refused, right answer sets the pass
   const { token } = a.login("alice", "correct horse", "ip");
   throwsStatus(() => a.reset({ username: "alice", answer: "Max", password: "new password" }, "ip"), 401);
   throwsStatus(() => a.reset({ username: "alice", answer: "rex", password: "short" }, "ip"), 400, /8 characters/);
+  const key = a.createKey(a.list().find((x) => x.username === "alice")!, "script").key;
   a.reset({ username: "alice", answer: "  REX", password: "new password" }, "ip");
   assert.equal(a.authenticate(`ff_session=${token}`, undefined), null);
+  assert.equal(a.authenticate(undefined, `Bearer ${key}`), null);   // a reset also revokes API keys
   throwsStatus(() => a.login("alice", "correct horse", "ip"), 401);
   assert.ok(a.login("alice", "new password", "ip").token);
 });
@@ -86,13 +88,15 @@ test("10 failed attempts per username or per IP in 15 minutes lock out with 429"
   let now = new Date("2026-11-01T00:00:00Z");
   const a = fresh({ now: () => now });
   a.signup(SIGNUP);
-  for (let i = 0; i < 10; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.0.0.${i}`), 401);
-  throwsStatus(() => a.login("alice", "correct horse", "10.9.9.9"), 429);   // by username, even from a new IP
+  for (let i = 0; i < 10; i++) throwsStatus(() => a.login("alice", "wrong pass", "10.0.0.1"), 401);
+  throwsStatus(() => a.login("alice", "correct horse", "10.0.0.1"), 429);   // that username from that IP
+  assert.ok(a.login("alice", "correct horse", "10.9.9.9").token);           // others cannot lock alice out
+  for (let i = 0; i < 9; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.1.0.${i}`), 401);
   a.signup({ ...SIGNUP, username: "bob" });
   for (let i = 0; i < 10; i++) throwsStatus(() => a.login(`ghost${i}`, "wrong pass", "6.6.6.6"), 401);
   throwsStatus(() => a.login("bob", "correct horse", "6.6.6.6"), 429);      // by IP, even for another user
   now = new Date("2026-11-01T00:16:00Z");
-  assert.ok(a.login("alice", "correct horse", "10.9.9.9").token);
+  assert.ok(a.login("alice", "correct horse", "10.0.0.1").token);
 });
 
 test("API keys: shown once, authenticate as Bearer, listed without the secret, revocable", () => {
@@ -112,6 +116,18 @@ test("API keys: shown once, authenticate as Bearer, listed without the secret, r
   assert.equal(a.revokeKey(other, k.id), false);   // not bob's key
   assert.equal(a.revokeKey(u, k.id), true);
   assert.equal(a.authenticate(undefined, `Bearer ${k.key}`), null);
+});
+
+test("reserving a run counts against the cap at once; a released reservation does not", () => {
+  const a = fresh({ runsPerDay: 1 });
+  const u = a.signup(SIGNUP);
+  const r = a.reserveRun(u, "video-t2v");
+  assert.throws(() => a.reserveRun(u, "video-t2v"), (e: unknown) => e instanceof AuthError && e.status === 429);
+  a.releaseRun(r);
+  const r2 = a.reserveRun(u, "video-t2v");
+  a.bindRun(r2, "run-1");
+  a.finishRun("run-1", 30, "succeeded");
+  assert.deepEqual(a.usage(u).runs.map((x) => [x.run_id, x.gpu_seconds]), [["run-1", 30]]);
 });
 
 test("runs are capped per user per UTC day; admins are not capped", () => {
@@ -160,7 +176,9 @@ test("admin is only made from code: addUser/setAdmin, never sign-up", () => {
   a.setAdmin("alice", false);
   assert.equal(a.list().find((x) => x.username === "alice")!.admin, false);
   throwsStatus(() => a.setAdmin("nobody", true), 404);
+  const key = a.createKey(a.list().find((x) => x.username === "alice")!).key;
   a.setPassword("alice", "replaced pw");
+  assert.equal(a.authenticate(undefined, `Bearer ${key}`), null);
   assert.ok(a.login("alice", "replaced pw", "ip").token);
 });
 

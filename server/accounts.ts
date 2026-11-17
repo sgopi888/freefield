@@ -125,7 +125,7 @@ export class Accounts {
     const r = this.row(username);
     if (!r) throw new AuthError(`no user ${username}`, 404);
     this.db.prepare("UPDATE users SET pw_hash = ? WHERE id = ?").run(hashSecret(checkPassword(password)), r.id as number);
-    this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(r.id as number);
+    this.revokeAll(Number(r.id));
   }
 
   list(): (User & { created: string })[] {
@@ -177,7 +177,7 @@ export class Accounts {
       throw new AuthError("that answer does not match", 401);
     }
     this.db.prepare("UPDATE users SET pw_hash = ? WHERE id = ?").run(hashSecret(pw), r!.id as number);
-    this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(r!.id as number);
+    this.revokeAll(Number(r!.id));
   }
 
   /** Who sent this request: an API key (Authorization: Bearer ff_…) or the session cookie; null when neither is valid. */
@@ -218,11 +218,12 @@ export class Accounts {
     return token;
   }
 
-  // brute-force lock: LOCK_AFTER failures per username or per IP within LOCK_WINDOW_MS
+  // brute-force lock: LOCK_AFTER failures per (username, IP) or per IP within LOCK_WINDOW_MS. Not per username alone,
+  // so nobody can lock a user out by failing on purpose from elsewhere; scrypt keeps guessing from many IPs slow.
   // shortcut: in memory, so a restart clears it; move to the db if the server ever runs as several processes
   private throttle(name: string, ip: string): void {
     const since = this.now().getTime() - LOCK_WINDOW_MS;
-    for (const k of [`u:${name}`, `ip:${ip}`]) {
+    for (const k of [`u:${name}|${ip}`, `ip:${ip}`]) {
       const recent = (this.failures.get(k) ?? []).filter((t) => t > since);
       this.failures.set(k, recent);
       if (recent.length >= LOCK_AFTER) throw new AuthError("too many failed attempts; try again in 15 minutes", 429);
@@ -231,7 +232,13 @@ export class Accounts {
 
   private fail(name: string, ip: string): void {
     const t = this.now().getTime();
-    for (const k of [`u:${name}`, `ip:${ip}`]) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
+    for (const k of [`u:${name}|${ip}`, `ip:${ip}`]) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
+  }
+
+  /** A new password ends every way in: sessions and API keys (a reset after a compromise must lock the intruder out). */
+  private revokeAll(userId: number): void {
+    this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    this.db.prepare("UPDATE api_keys SET revoked = ? WHERE user_id = ? AND revoked IS NULL").run(this.now().toISOString(), userId);
   }
 
   /** Mint a session for a user created a moment ago (sign-up logs you straight in). */
@@ -271,6 +278,26 @@ export class Accounts {
       .get(user.id, this.dayStart()) as { n: number }).n);
     return n >= this.runsPerDay
       ? `your ${this.runsPerDay} runs for today (UTC) are used up; they reset at 00:00 UTC` : null;
+  }
+
+  /**
+   * Check the cap and take a slot in one synchronous step (no await between them), so requests arriving together
+   * cannot all pass. Returns a reservation id: bindRun() it to the run, or releaseRun() it when the run never starts.
+   */
+  reserveRun(user: User, app: string): string {
+    const refused = this.refuseRun(user);
+    if (refused) throw new AuthError(refused, 429);
+    const id = `pending:${randomBytes(8).toString("hex")}`;
+    this.recordRun(user, id, app);
+    return id;
+  }
+
+  bindRun(reservation: string, runId: string): void {
+    this.db.prepare("UPDATE usage SET run_id = ? WHERE run_id = ?").run(runId, reservation);
+  }
+
+  releaseRun(reservation: string): void {
+    this.db.prepare("DELETE FROM usage WHERE run_id = ?").run(reservation);
   }
 
   recordRun(user: User, runId: string, app: string): void {
