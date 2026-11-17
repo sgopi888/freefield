@@ -58,6 +58,9 @@ def download(pack: str) -> dict:
     timeout=24 * 3600,
     scaledown_window=600,      # stays warm 10 min after the last request
     max_containers=1,          # one ComfyUI owns the GPU; the gateway queues the rest
+    # ComfyUI holds decoded video frames in RAM (float32): on the default request an 80 s clip got the container
+    # killed ("exceeding its memory request") and every queued job with it. 32 GiB ≈ $0.26/h while warm.
+    memory=int(os.environ.get("FREEFIELD_MEMORY_MB", 32768)),
 )
 @modal.concurrent(max_inputs=64)
 @modal.web_server(8000, startup_timeout=900)
