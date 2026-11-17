@@ -199,6 +199,24 @@ test("runs that were going when the server stopped are lost or followed again", 
   } finally { done(); }
 });
 
+test("a long clip cut off by a restart is marked lost and its piece's GPU job canceled, not taken as the result", async () => {
+  const { dir, history, done } = tempHistory();
+  try {
+    const app = byId("z-image");
+    const entry = history.start(app, resolveValues(app, { prompt: "long clip" }));
+    history.attach(entry, { id: "piece-job-3", cancel: async () => undefined });
+    history.pieces(entry, 2, 12, 400);
+    const restarted = new History(dir);
+    const canceled: string[] = [];
+    restarted.resume(async (id) => ({ ...fakeJob("succeeded"), cancel: async () => { canceled.push(id); } }));
+    await new Promise((r) => setTimeout(r, 100));
+    const after = restarted.get(entry.id)!;
+    assert.equal(after.status, "lost");
+    assert.match(after.error!.message, /restarted.*Try again/);
+    assert.deepEqual(canceled, ["piece-job-3"]);
+  } finally { done(); }
+});
+
 test("file names are checked before touching the disk", () => {
   const { history, done } = tempHistory();
   try {

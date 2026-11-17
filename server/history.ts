@@ -37,6 +37,8 @@ export type Entry = {
   error: { message: string; class_type?: string | null; node?: string | null } | null;
   /** the visitor who started it, on a hosted demo; never sent to the browser */
   owner?: string;
+  /** a long clip run in pieces (server/chunked.ts): this server drives it, so it cannot be picked up after a restart */
+  pieces?: { done: number; total: number };
 };
 
 /** The part of the SDK's Job the history uses (tests pass a fake). */
@@ -272,6 +274,8 @@ export class History {
   }
 
   pieces(entry: Entry, done: number, total: number, eta: number | null = null): void {
+    entry.pieces = { done, total };
+    this.save(entry);
     const live = this.live.get(entry.id);
     if (live) live.progress = { value: total ? done / total : 0, step: done, steps: total, node: "piece", eta, eta_at: Date.now() };
   }
@@ -438,6 +442,11 @@ export class History {
       if (TERMINAL.has(entry.status)) continue;
       if (!entry.job) {
         this.fail(entry, "the server stopped before this run reached the backend", "lost");
+        continue;
+      }
+      if (entry.pieces) {   // the loop over the pieces died with the server: stop the piece still on the GPU
+        getJob(entry.job).then((job) => job.cancel()).catch(() => {});
+        this.fail(entry, `the server restarted during this long clip (piece ${entry.pieces.done + 1} of ${entry.pieces.total}): press Try again`, "lost");
         continue;
       }
       if (Date.now() - new Date(entry.started ?? entry.created).getTime() > maxAgeMs) {
