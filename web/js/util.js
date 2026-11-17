@@ -162,7 +162,26 @@ export function toast(message, { error = false, ms = 4200 } = {}) {
   if (!host) document.body.append(host = el("div", { class: "toast-host", role: "status", "aria-live": "polite" }));
   const t = el("div", { class: `toast${error ? " err" : ""}` }, message);
   host.append(t);
-  setTimeout(() => t.remove(), error ? Math.max(ms, 8000) : ms);
+  if (ms !== Infinity) setTimeout(() => t.remove(), error ? Math.max(ms, 8000) : ms);
+  return t;
+}
+
+/** POST a form like api(), but with upload progress (fetch cannot report it): onProgress(0…1). */
+export function upload(path, body, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", path);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    x.onload = () => {
+      let b = null;
+      try { b = JSON.parse(x.responseText); } catch { /* not JSON: a proxy's error page */ }
+      if (x.status === 401 && b?.login) location.assign(b.login);
+      if (x.status >= 200 && x.status < 300) return resolve(b);
+      reject(new ApiError(b?.error || (x.status === 413 ? "the file is too large for this server" : `${x.status} ${x.statusText}`), x.status));
+    };
+    x.onerror = () => reject(new ApiError("the upload failed (network)", 0));
+    x.send(body);
+  });
 }
 
 let openPop = null;

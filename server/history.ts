@@ -7,7 +7,7 @@
 // the UI shows it as "starting" right away instead of a spinner on a button.
 // On a hosted demo each run belongs to the visitor who started it (`owner`, from guard.ts): every read, file,
 // cancel and delete takes that visitor and sees only their runs. Locally there is no owner and nothing is filtered.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { ComfyEvent } from "@comfyorg/sdk";
@@ -248,6 +248,50 @@ export class History {
     this.save(entry);
     this.live.set(id, { progress: null, queue: null, preview: null });
     return entry;
+  }
+
+  // ---- runs made of several jobs (server/chunked.ts: a long clip in pieces)
+
+  /** Where an input file of this run is on disk. */
+  inputPath(entry: Entry, inputId: string): string | null {
+    const i = entry.inputs.find((x) => x.id === inputId);
+    return i ? join(this.dir, entry.id, i.file) : null;
+  }
+
+  /** The job now running for this run, so Cancel reaches it. */
+  attach(entry: Entry, job: { id: string; cancel(): Promise<unknown> }): void {
+    const live = this.live.get(entry.id);
+    if (!live) return;
+    live.job = job as JobLike;
+    entry.job = job.id;
+    entry.status = "running";
+    entry.started ??= new Date().toISOString();
+    this.save(entry);
+    if (live.cancelRequested) void job.cancel().catch(() => {});
+  }
+
+  pieces(entry: Entry, done: number, total: number): void {
+    const live = this.live.get(entry.id);
+    if (live) live.progress = { value: total ? done / total : 0, step: done, steps: total, node: "piece" };
+  }
+
+  cancelRequested(entry: Entry): boolean {
+    return Boolean(this.live.get(entry.id)?.cancelRequested) || this.removed.has(entry.id);
+  }
+
+  /** Finish with a file made here (the joined pieces) as the run's output. */
+  complete(entry: Entry, file: string, gpuSeconds: number): void {
+    const folder = join(this.dir, entry.id);
+    if (!existsSync(folder)) return;   // deleted while running
+    const out = `out-01${extname(file).toLowerCase() || ".mp4"}`;
+    copyFileSync(file, join(folder, out));
+    entry.outputs.push({ file: out, type: "video", name: out, node: "" });
+    entry.status = "succeeded";
+    entry.finished = new Date().toISOString();
+    entry.seconds = gpuSeconds;
+    entry.total = secondsBetween(entry.created, entry.finished);
+    this.save(entry);
+    this.live.delete(entry.id);
   }
 
   /** The submit failed (bad workflow, backend unreachable, missing models): keep the reason with the run. */

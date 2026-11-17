@@ -1,5 +1,7 @@
-# Freefield web UI + API (server/server.ts). The GPU backend stays on Modal; this image only needs Node.
+# Freefield web UI + API (server/server.ts). The GPU backend stays on Modal; this image needs Node and ffmpeg.
 FROM node:22-slim
+# ffmpeg/ffprobe: long clips are cut into pieces and joined (server/chunked.ts)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && apt-get clean
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

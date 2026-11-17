@@ -13,11 +13,29 @@
       "type": "video",
       "label": "Clip",
       "required": true,
-      "limits": { "max_mb": 200, "seconds": [1, 20] },
-      "bind": [{ "node": "1", "field": "file" }]
+      "limits": {
+        "max_mb": 2048,
+        "seconds": [
+          1,
+          600
+        ]
+      },
+      "bind": [
+        {
+          "node": "1",
+          "field": "file"
+        }
+      ],
+      "help": "Up to 10 minutes. Clips over 20 s are upscaled in pieces and joined, original audio kept."
     }
   ],
-  "outputs": [{ "node": "6", "type": "video", "label": "Upscaled" }],
+  "outputs": [
+    {
+      "node": "6",
+      "type": "video",
+      "label": "Upscaled"
+    }
+  ],
   "models": [
     {
       "repo": "ai-forever/Real-ESRGAN",
@@ -28,6 +46,10 @@
       "license": "BSD-3-Clause"
     }
   ],
-  "credits": ["Real-ESRGAN by Xintao Wang et al., weights by ai-forever (BSD-3-Clause)"],
-  "test": { "clip": "test/clip.mp4" }
+  "credits": [
+    "Real-ESRGAN by Xintao Wang et al., weights by ai-forever (BSD-3-Clause)"
+  ],
+  "test": {
+    "clip": "test/clip.mp4"
+  }
 }

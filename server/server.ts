@@ -27,7 +27,7 @@
 // Runs are capped per user per day (admins excepted); /api/jobs and lab marks become admin only.
 // web/examples/ holds one example per app, written by lab/publish.py; /api/apps carries it along.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { loadRegistry, repoRoot, isFileInput, type App } from "./registry.ts";
 import { explainSubmitError, InputError, resolveValues, Runner, type Values } from "./runner.ts";
@@ -35,6 +35,7 @@ import { History } from "./history.ts";
 import { Flags } from "./flags.ts";
 import { DOOR_HTML, foreign, Guard } from "./guard.ts";
 import { Accounts, AuthError, type User } from "./accounts.ts";
+import { CHUNK_OVER_SECONDS, CHUNKED_APPS, probe, runChunked } from "./chunked.ts";
 
 const root = repoRoot();
 const { apps, problems } = loadRegistry(root);
@@ -192,19 +193,47 @@ async function jobView(id: string) {
   };
 }
 
+/** A clip too long to run whole (server/chunked.ts), or null. Without ffprobe every clip runs whole, as before. */
+async function longClip(app: App, entry: ReturnType<typeof history.start>) {
+  if (!CHUNKED_APPS.has(app.id)) return null;
+  const inputId = app.inputs.find((i) => i.type === "video")?.id;
+  const path = inputId ? history.inputPath(entry, inputId) : null;
+  if (!inputId || !path) return null;
+  try {
+    return (await probe(path)).duration > CHUNK_OVER_SECONDS ? { inputId, path } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Submit in the background; the entry tells the UI how it goes. */
 function startRun(app: App, values: Values, preset?: string, owner?: string, user?: User | null) {
   const entry = history.start(app, values, preset, owner);
   void (async () => {
+    const workDir = join(outDir, "work", entry.id);
     try {
-      const job = await getRunner().submit(app, values, preset);
-      contact();
-      await history.follow(entry, job);
+      const long = await longClip(app, entry);
+      if (long) {
+        const r = await runChunked({
+          app, values, inputId: long.inputId, input: long.path, workDir,
+          submit: async (a, v) => { const job = await getRunner().submit(a, v, preset); contact(); return job; },
+          onJob: (job) => history.attach(entry, job as { id: string; cancel(): Promise<unknown> }),
+          onProgress: (done, total) => history.pieces(entry, done, total),
+          isCanceled: () => history.cancelRequested(entry),
+        });
+        history.complete(entry, r.file, r.gpuSeconds);
+      } else {
+        const job = await getRunner().submit(app, values, preset);
+        contact();
+        await history.follow(entry, job);
+      }
     } catch (e) {
       const explained = explainSubmitError(app, e);
       const message = explained ?? (e as Error).message ?? String(e);
       console.error(`[${app.id}] ${message}`);
-      history.fail(entry, message);
+      history.fail(entry, message, history.cancelRequested(entry) ? "canceled" : "failed");
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
     }
     // shortcut: runs resumed after a server restart keep their usage row at status "started" with no GPU seconds
     if (user) accounts?.finishRun(entry.id, entry.seconds, entry.status);
@@ -301,7 +330,7 @@ async function authRoute(acc: Accounts, req: IncomingMessage, res: ServerRespons
   }
   if (req.method === "GET" && action === "question") {
     const question = acc.question(url.searchParams.get("username"));
-    return question ? send(res, 200, { question }) : send(res, 404, { error: "no such user, or no secret question set" });
+    return question ? send(res, 200, { question }) : send(res, 404, { error: "no secret question for this username: ask an admin to reset the password" });
   }
   if (req.method === "GET" && action === "me") {
     const user = acc.authenticate(req.headers.cookie, req.headers.authorization);

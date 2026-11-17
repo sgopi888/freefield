@@ -1,6 +1,6 @@
 // The history feed: runs started here (out/history on the server), polled while any is going,
 // drawn as result cards that keep their place (and their playing video) while others update.
-import { api, el, icon, fmtSeconds, masonry, toast, live } from "./util.js";
+import { api, upload, el, icon, fmtSeconds, masonry, toast, live } from "./util.js";
 import { t, ago } from "./i18n.js";
 import { byId, promptInput } from "./catalog.js";
 import { entryItem, thumb, downloadName } from "./media.js";
@@ -48,7 +48,12 @@ class Feed {
     this.schedule();
   }
   async run(appId, formData) {
-    const entry = await api(`/api/apps/${appId}/run`, { method: "POST", body: formData });
+    let note = null;   // big files take a while: show how far the upload is
+    const entry = await upload(`/api/apps/${appId}/run`, formData, (f) => {
+      if (f >= 1 && !note) return;
+      note ??= toast("", { ms: Infinity });
+      note.textContent = f >= 1 ? t("upload.done") : t("upload.progress", { p: Math.round(f * 100) });
+    }).finally(() => note?.remove());
     this.entries.set(entry.id, entry);
     this.emit();
     this.schedule();
