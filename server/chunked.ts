@@ -25,9 +25,9 @@ const MAX_PIECES = 120;
 const LOCAL_ONLY = ["-protocol_whitelist", "file"];
 const CONTAINERS = /^(mov,mp4,m4a,3gp,3g2,mj2|matroska,webm)$/;
 const MINUTE = 60 * 1000;
-// GPU seconds per megapixel-frame of input, measured on an L40S (10 s 1280x704 clip: Real-ESRGAN 85 s, SeedVR2
-// 1363 s): the time-left estimate until the first piece has finished and its real time can be used instead
-const SECONDS_PER_MPX_FRAME: Record<string, number> = { "upscale-video-fast": 0.4, "upscale-video": 6.3 };
+// GPU seconds per megapixel-frame of input on the H100 backend: SeedVR2 measured (7 s 720x1280 piece: 446 s);
+// Real-ESRGAN scaled from its L40S figure (0.4) by the same 2.7x. Only the estimate until the first piece is done.
+const SECONDS_PER_MPX_FRAME: Record<string, number> = { "upscale-video-fast": 0.15, "upscale-video": 2.3 };
 
 export type Probe = { width: number; height: number; fps: number; duration: number; audio: boolean };
 

@@ -30,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from infra.common import (COMFY_DIR, build_image, ensure_models, freefield_secret, hf_secret,  # noqa: E402
                           models_volume, start_comfyui, wait_port)
 
-GPU = os.environ.get("FREEFIELD_GPU", "L40S")
+# H100: SeedVR2 measured 2.7x faster than L40S (7 s 720x1280 piece: 446 s vs ~20 min) at 2x the price
+GPU = os.environ.get("FREEFIELD_GPU", "H100")
 COMFY_ARGS = os.environ.get("FREEFIELD_COMFY_ARGS", "")   # e.g. "--reserve-vram 1" or "--disable-smart-memory"
 
 app = modal.App("freefield")
