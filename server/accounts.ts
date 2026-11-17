@@ -24,10 +24,11 @@ const SESSION = "ff_session";
 const SESSION_DAYS = 30;
 const USERNAME = /^[a-z0-9_-]{3,32}$/;
 const LOCK_WINDOW_MS = 15 * 60 * 1000;
-const LOCK_AFTER = 10;   // per (username, client) and per client
-// per account, from any client: high for passwords (a typo storm must not lock the owner out), low for secret-question
-// answers, which have far less entropy than a password
-const ACCOUNT_LOCK = { login: 50, reset: 5 } as const;
+const IP_LOCK = 10;                              // failures per client, any usernames
+const PAIR_LOCK = { login: 10, reset: 3 } as const;   // failures per (username, client); answers are easier to guess
+// distinct failing clients per account before *new* clients must wait; one address can never trip it alone, and a
+// client that signed in to the account before is never held back by it (the owner cannot be locked out from afar)
+const ACCOUNT_LOCK = { login: 20, reset: 5 } as const;
 
 /** The client as a lock key: IPv4 as is (also when IPv4-mapped), IPv6 by its /64, the block one subscriber gets. */
 export function clientKey(ip: string): string {
@@ -71,6 +72,8 @@ export class Accounts {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;
   private readonly failures = new Map<string, number[]>();
+  private readonly accountFailures = new Map<string, Map<string, number>>();   // kind:name → client → last failure
+  private readonly knownClients = new Set<string>();                         // name|client that signed in
 
   constructor(file: string, opts: AccountsOptions = {}) {
     mkdirSync(dirname(file), { recursive: true });
@@ -167,6 +170,7 @@ export class Accounts {
       this.fail("login", name, ip);
       throw new AuthError("wrong username or password", 401);
     }
+    this.knownClients.add(`${name}|${clientKey(ip)}`);
     return { token: this.newSession(Number(r!.id)), user: toUser(r!) };
   }
 
@@ -232,26 +236,31 @@ export class Accounts {
     return token;
   }
 
-  // brute-force lock within LOCK_WINDOW_MS: LOCK_AFTER failures per (username, client) or per client, and
-  // ACCOUNT_LOCK[kind] per account from anywhere (guessing spread over many addresses still stops).
+  // brute-force lock within LOCK_WINDOW_MS: per client, per (username, client), and per account by distinct clients.
   // shortcut: in memory, so a restart clears it; move to the db if the server ever runs as several processes
-  private lockKeys(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): [string, number][] {
-    const c = clientKey(ip);
-    return [[`pair:${name}|${c}`, LOCK_AFTER], [`ip:${c}`, LOCK_AFTER], [`${kind}:${name}`, ACCOUNT_LOCK[kind]]];
-  }
-
   private throttle(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): void {
     const since = this.now().getTime() - LOCK_WINDOW_MS;
-    for (const [k, limit] of this.lockKeys(kind, name, ip)) {
+    const c = clientKey(ip);
+    for (const [k, limit] of [[`ip:${c}`, IP_LOCK], [`${kind}:${name}|${c}`, PAIR_LOCK[kind]]] as const) {
       const recent = (this.failures.get(k) ?? []).filter((t) => t > since);
       this.failures.set(k, recent);
       if (recent.length >= limit) throw new AuthError("too many failed attempts; try again in 15 minutes", 429);
+    }
+    if (this.knownClients.has(`${name}|${c}`)) return;
+    const clients = this.accountFailures.get(`${kind}:${name}`);
+    for (const [client, t] of clients ?? []) if (t <= since) clients!.delete(client);
+    if ((clients?.size ?? 0) >= ACCOUNT_LOCK[kind]) {
+      throw new AuthError("too many failed attempts on this account; try again in 15 minutes", 429);
     }
   }
 
   private fail(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): void {
     const t = this.now().getTime();
-    for (const [k] of this.lockKeys(kind, name, ip)) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
+    const c = clientKey(ip);
+    for (const k of [`ip:${c}`, `${kind}:${name}|${c}`]) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
+    const key = `${kind}:${name}`;
+    if (!this.accountFailures.has(key)) this.accountFailures.set(key, new Map());
+    this.accountFailures.get(key)!.set(c, t);
   }
 
   /** A new password ends every way in: sessions and API keys (a reset after a compromise must lock the intruder out). */

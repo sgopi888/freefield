@@ -99,15 +99,23 @@ test("10 failed attempts per username or per IP in 15 minutes lock out with 429"
   assert.ok(a.login("alice", "correct horse", "10.0.0.1").token);
 });
 
-test("per-account limits: 50 failed logins from any IPs, but only 5 wrong reset answers", () => {
+test("per-account limits count distinct clients, and never lock out a client that signed in before", () => {
   const a = fresh();
   a.signup(SIGNUP);
-  for (let i = 0; i < 50; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.2.${i >> 8}.${i & 255}`), 401);
-  throwsStatus(() => a.login("alice", "correct horse", "10.3.0.1"), 429);
+  a.login("alice", "correct horse", "10.8.0.1");                              // alice's usual client
+  for (let i = 0; i < 20; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.2.0.${i}`), 401);
+  throwsStatus(() => a.login("alice", "correct horse", "10.3.0.1"), 429);     // 20 clients failed: new clients wait
+  assert.ok(a.login("alice", "correct horse", "10.8.0.1").token);             // the known client still gets in
+
+  a.signup({ ...SIGNUP, username: "dave" });
+  for (let i = 0; i < 3; i++) throwsStatus(() => a.reset({ username: "dave", answer: `g${i}`, password: "new password" }, "10.6.0.1"), 401);
+  throwsStatus(() => a.reset({ username: "dave", answer: "rex", password: "new password" }, "10.6.0.1"), 429);   // 3 per client
+  a.reset({ username: "dave", answer: "rex", password: "new password" }, "10.6.0.2");   // one client cannot lock the account
+
   a.signup({ ...SIGNUP, username: "carol" });
   for (let i = 0; i < 5; i++) throwsStatus(() => a.reset({ username: "carol", answer: `guess${i}`, password: "new password" }, `10.4.0.${i}`), 401);
-  throwsStatus(() => a.reset({ username: "carol", answer: "rex", password: "new password" }, "10.5.0.1"), 429);
-  assert.ok(a.login("carol", "correct horse", "10.5.0.1").token);   // the reset lock does not block login
+  throwsStatus(() => a.reset({ username: "carol", answer: "rex", password: "new password" }, "10.5.0.1"), 429);   // 5 clients
+  assert.ok(a.login("carol", "correct horse", "10.5.0.1").token);             // the reset lock does not block login
 });
 
 test("IPv6 addresses in one /64 count as one client", () => {
