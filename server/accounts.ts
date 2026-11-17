@@ -26,9 +26,11 @@ const USERNAME = /^[a-z0-9_-]{3,32}$/;
 const LOCK_WINDOW_MS = 15 * 60 * 1000;
 const IP_LOCK = 10;                              // failures per client, any usernames
 const PAIR_LOCK = { login: 10, reset: 3 } as const;   // failures per (username, client); answers are easier to guess
-// distinct failing clients per account before *new* clients must wait; one address can never trip it alone, and a
-// client that signed in to the account before is never held back by it (the owner cannot be locked out from afar)
-const ACCOUNT_LOCK = { login: 20, reset: 5 } as const;
+// total failures per account from clients not known to it; above any one client's own limit, so one address can
+// never trip it alone. For login, a client that signed in to the account in the last 30 days (with the current
+// password) is exempt, so the owner cannot be locked out from afar; reset has no exemption.
+const ACCOUNT_LOCK = { login: 100, reset: 15 } as const;
+const KNOWN_MS = 30 * 86400 * 1000;
 
 /** The client as a lock key: IPv4 as is (also when IPv4-mapped), IPv6 by its /64, the block one subscriber gets. */
 export function clientKey(ip: string): string {
@@ -72,8 +74,7 @@ export class Accounts {
   private readonly db: DatabaseSync;
   private readonly now: () => Date;
   private readonly failures = new Map<string, number[]>();
-  private readonly accountFailures = new Map<string, Map<string, number>>();   // kind:name → client → last failure
-  private readonly knownClients = new Set<string>();                         // name|client that signed in
+  private readonly knownClients = new Map<string, number>();   // name|client that signed in → until (ms)
 
   constructor(file: string, opts: AccountsOptions = {}) {
     mkdirSync(dirname(file), { recursive: true });
@@ -170,7 +171,7 @@ export class Accounts {
       this.fail("login", name, ip);
       throw new AuthError("wrong username or password", 401);
     }
-    this.knownClients.add(`${name}|${clientKey(ip)}`);
+    this.knownClients.set(`${name}|${clientKey(ip)}`, this.now().getTime() + KNOWN_MS);
     return { token: this.newSession(Number(r!.id)), user: toUser(r!) };
   }
 
@@ -246,10 +247,10 @@ export class Accounts {
       this.failures.set(k, recent);
       if (recent.length >= limit) throw new AuthError("too many failed attempts; try again in 15 minutes", 429);
     }
-    if (this.knownClients.has(`${name}|${c}`)) return;
-    const clients = this.accountFailures.get(`${kind}:${name}`);
-    for (const [client, t] of clients ?? []) if (t <= since) clients!.delete(client);
-    if ((clients?.size ?? 0) >= ACCOUNT_LOCK[kind]) {
+    if (kind === "login" && (this.knownClients.get(`${name}|${c}`) ?? 0) > this.now().getTime()) return;
+    const total = (this.failures.get(`acct:${kind}:${name}`) ?? []).filter((t) => t > since);
+    this.failures.set(`acct:${kind}:${name}`, total);
+    if (total.length >= ACCOUNT_LOCK[kind]) {
       throw new AuthError("too many failed attempts on this account; try again in 15 minutes", 429);
     }
   }
@@ -257,14 +258,15 @@ export class Accounts {
   private fail(kind: keyof typeof ACCOUNT_LOCK, name: string, ip: string): void {
     const t = this.now().getTime();
     const c = clientKey(ip);
-    for (const k of [`ip:${c}`, `${kind}:${name}|${c}`]) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
-    const key = `${kind}:${name}`;
-    if (!this.accountFailures.has(key)) this.accountFailures.set(key, new Map());
-    this.accountFailures.get(key)!.set(c, t);
+    const known = kind === "login" && (this.knownClients.get(`${name}|${c}`) ?? 0) > t;
+    const keys = [`ip:${c}`, `${kind}:${name}|${c}`, ...(known ? [] : [`acct:${kind}:${name}`])];
+    for (const k of keys) this.failures.set(k, [...(this.failures.get(k) ?? []), t]);
   }
 
   /** A new password ends every way in: sessions and API keys (a reset after a compromise must lock the intruder out). */
   private revokeAll(userId: number): void {
+    const name = String((this.db.prepare("SELECT username FROM users WHERE id = ?").get(userId) as { username: string }).username);
+    for (const k of [...this.knownClients.keys()]) if (k.startsWith(`${name}|`)) this.knownClients.delete(k);
     this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
     this.db.prepare("UPDATE api_keys SET revoked = ? WHERE user_id = ? AND revoked IS NULL").run(this.now().toISOString(), userId);
   }

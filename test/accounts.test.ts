@@ -99,12 +99,12 @@ test("10 failed attempts per username or per IP in 15 minutes lock out with 429"
   assert.ok(a.login("alice", "correct horse", "10.0.0.1").token);
 });
 
-test("per-account limits count distinct clients, and never lock out a client that signed in before", () => {
+test("per-account limits: total failures from unknown clients; a client that signed in keeps logging in", () => {
   const a = fresh();
   a.signup(SIGNUP);
   a.login("alice", "correct horse", "10.8.0.1");                              // alice's usual client
-  for (let i = 0; i < 20; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.2.0.${i}`), 401);
-  throwsStatus(() => a.login("alice", "correct horse", "10.3.0.1"), 429);     // 20 clients failed: new clients wait
+  for (let i = 0; i < 100; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.2.${i >> 8}.${i & 255}`), 401);
+  throwsStatus(() => a.login("alice", "correct horse", "10.3.0.1"), 429);     // 100 failures: unknown clients wait
   assert.ok(a.login("alice", "correct horse", "10.8.0.1").token);             // the known client still gets in
 
   a.signup({ ...SIGNUP, username: "dave" });
@@ -113,9 +113,26 @@ test("per-account limits count distinct clients, and never lock out a client tha
   a.reset({ username: "dave", answer: "rex", password: "new password" }, "10.6.0.2");   // one client cannot lock the account
 
   a.signup({ ...SIGNUP, username: "carol" });
-  for (let i = 0; i < 5; i++) throwsStatus(() => a.reset({ username: "carol", answer: `guess${i}`, password: "new password" }, `10.4.0.${i}`), 401);
-  throwsStatus(() => a.reset({ username: "carol", answer: "rex", password: "new password" }, "10.5.0.1"), 429);   // 5 clients
+  a.login("carol", "correct horse", "10.7.0.1");
+  for (let i = 0; i < 15; i++) throwsStatus(() => a.reset({ username: "carol", answer: `guess${i}`, password: "new password" }, `10.4.${i}.1`), 401);
+  throwsStatus(() => a.reset({ username: "carol", answer: "rex", password: "new password" }, "10.5.0.1"), 429);   // 15 in total
+  throwsStatus(() => a.reset({ username: "carol", answer: "rex", password: "new password" }, "10.7.0.1"), 429);   // known: no help for reset
   assert.ok(a.login("carol", "correct horse", "10.5.0.1").token);             // the reset lock does not block login
+});
+
+test("a known client stops being known after a password change or 30 days", () => {
+  let now = new Date("2026-11-01T00:00:00Z");
+  const a = fresh({ now: () => now });
+  a.signup(SIGNUP);
+  a.login("alice", "correct horse", "10.8.0.1");
+  for (let i = 0; i < 100; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.2.${i >> 8}.${i & 255}`), 401);
+  a.setPassword("alice", "changed pw1");
+  throwsStatus(() => a.login("alice", "changed pw1", "10.8.0.1"), 429);       // trust ended with the old password
+  now = new Date("2026-11-01T00:16:00Z");
+  a.login("alice", "changed pw1", "10.8.0.1");
+  now = new Date("2026-12-02T00:00:00Z");
+  for (let i = 0; i < 100; i++) throwsStatus(() => a.login("alice", "wrong pass", `10.3.${i >> 8}.${i & 255}`), 401);
+  throwsStatus(() => a.login("alice", "changed pw1", "10.8.0.1"), 429);       // known for 30 days only
 });
 
 test("IPv6 addresses in one /64 count as one client", () => {
