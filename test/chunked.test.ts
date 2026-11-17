@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chunkSeconds, probe, runChunked } from "../server/chunked.ts";
+import { checkClip, chunkSeconds, probe, runChunked } from "../server/chunked.ts";
+import { writeFileSync } from "node:fs";
 import type { App } from "../server/registry.ts";
 
 const hasFfmpeg = (() => { try { execFileSync("ffmpeg", ["-version"], { stdio: "ignore" }); return true; } catch { return false; } })();
@@ -67,4 +68,21 @@ test("a failed piece fails the whole run with that piece's error", { skip: !hasF
       outputs: [{ name: "o.mp4", type: "video", nodeId: "6", contentType: "video/mp4", toBytes: async () => new Uint8Array([0]) }],
     }),
   }), /piece 2 of 2.*CUDA out of memory/);
+});
+
+test("the server enforces the clip limits: length, resolution and number of pieces", () => {
+  const app = { inputs: [{ id: "clip", type: "video", limits: { seconds: [1, 600] } }] } as unknown as App;
+  const ok = { width: 1920, height: 1080, fps: 30, duration: 300, audio: true };
+  assert.equal(checkClip(app, "clip", ok), null);
+  assert.match(checkClip(app, "clip", { ...ok, duration: 601 })!, /600 s/);
+  assert.match(checkClip(app, "clip", { ...ok, duration: 0.5 })!, /at least 1 s/);
+  assert.match(checkClip(app, "clip", { ...ok, width: 3840, height: 2160 })!, /2560×1440/);
+  assert.match(checkClip(app, "clip", { ...ok, width: 2560, height: 1440, fps: 120, duration: 600 })!, /pieces/);
+});
+
+test("probe refuses playlists and other non-video formats (no network or file reads by ffmpeg)", { skip: !hasFfmpeg && "no ffmpeg" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ff-chunk-"));
+  const fake = join(dir, "clip.mp4");   // an HLS playlist dressed as a video
+  writeFileSync(fake, "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nhttp://169.254.169.254/latest/meta-data\n#EXT-X-ENDLIST\n");
+  await assert.rejects(probe(fake), /not a supported video|Invalid data|Protocol|not on whitelist/i);
 });

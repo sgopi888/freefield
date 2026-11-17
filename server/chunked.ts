@@ -18,12 +18,21 @@ export const CHUNKED_APPS = new Set(["upscale-video", "upscale-video-fast"]);
 export const CHUNK_OVER_SECONDS = 20;
 // input pixels × frames per piece: 1280×704 × 241 frames (≈217 M) ran whole on an L40S for both upscalers
 const PIXEL_FRAME_BUDGET = 200e6;
+const MAX_PIXELS = 2560 * 1440;
+const MAX_PIECES = 120;
+// uploads are untrusted: ffmpeg may read local files only (no http, no playlists pointing elsewhere), and only real
+// video containers are accepted (an HLS or concat "video" could make ffmpeg fetch URLs or read server files)
+const LOCAL_ONLY = ["-protocol_whitelist", "file"];
+const CONTAINERS = /^(mov,mp4,m4a,3gp,3g2,mj2|matroska,webm|avi)$/;
+const MINUTE = 60 * 1000;
 
 export type Probe = { width: number; height: number; fps: number; duration: number; audio: boolean };
 
 export async function probe(file: string): Promise<Probe> {
-  const { stdout } = await run("ffprobe", ["-v", "error", "-print_format", "json", "-show_streams", "-show_format", file]);
-  const d = JSON.parse(stdout) as { streams: Record<string, string | number>[]; format: { duration?: string } };
+  const { stdout } = await run("ffprobe", ["-v", "error", ...LOCAL_ONLY, "-print_format", "json", "-show_streams",
+    "-show_format", file], { timeout: MINUTE });
+  const d = JSON.parse(stdout) as { streams: Record<string, string | number>[]; format: { duration?: string; format_name?: string } };
+  if (!CONTAINERS.test(d.format.format_name ?? "")) throw new Error(`not a supported video (${d.format.format_name ?? "unknown"})`);
   const v = d.streams.find((s) => s.codec_type === "video");
   if (!v) throw new Error("the clip has no video stream");
   const [num, den] = String(v.avg_frame_rate || v.r_frame_rate || "24/1").split("/").map(Number);
@@ -31,6 +40,16 @@ export async function probe(file: string): Promise<Probe> {
     width: Number(v.width), height: Number(v.height), fps: den ? num / den : num || 24,
     duration: Number(d.format.duration ?? v.duration ?? 0), audio: d.streams.some((s) => s.codec_type === "audio"),
   };
+}
+
+/** Why this clip may not run, or null: the app's length limits, a resolution cap and a cap on pieces per run. */
+export function checkClip(app: App, inputId: string, p: Probe): string | null {
+  const [min, max] = app.inputs.find((i) => i.id === inputId)?.limits?.seconds ?? [1, 600];
+  if (p.duration < min) return `the clip must be at least ${min} s`;
+  if (p.duration > max) return `the clip must be at most ${max} s (it is ${Math.round(p.duration)} s)`;
+  if (p.width * p.height > MAX_PIXELS) return `the clip must be at most 2560×1440 (it is ${p.width}×${p.height})`;
+  if (Math.ceil(p.duration / chunkSeconds(p)) > MAX_PIECES) return `the clip would need over ${MAX_PIECES} pieces: shorten it or lower its resolution or frame rate`;
+  return null;
 }
 
 /** Seconds per piece: as long as fits the frame budget, between 2 and 20. */
@@ -48,9 +67,9 @@ export async function runChunked(o: {
   mkdirSync(o.workDir, { recursive: true });
   const seconds = o.seconds ?? chunkSeconds(await probe(o.input));
   // re-encode (near-lossless) with a keyframe at every cut, so pieces are exactly `seconds` long and join cleanly
-  await run("ffmpeg", ["-v", "error", "-y", "-i", o.input, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
+  await run("ffmpeg", ["-v", "error", "-y", ...LOCAL_ONLY, "-i", o.input, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
     "-pix_fmt", "yuv420p", "-force_key_frames", `expr:gte(t,n_forced*${seconds})`, "-f", "segment",
-    "-segment_time", String(seconds), "-reset_timestamps", "1", join(o.workDir, "part-%04d.mp4")], { maxBuffer: 1 << 24 });
+    "-segment_time", String(seconds), "-reset_timestamps", "1", join(o.workDir, "part-%04d.mp4")], { maxBuffer: 1 << 24, timeout: 60 * MINUTE });
   const parts = readdirSync(o.workDir).filter((f) => /^part-\d{4}\.mp4$/.test(f)).sort();
   if (!parts.length) throw new Error("could not cut the clip into pieces");
 
@@ -80,7 +99,8 @@ export async function runChunked(o: {
 
   writeFileSync(join(o.workDir, "list.txt"), done.map((f) => `file '${f}'\n`).join(""));
   const file = join(o.workDir, "joined.mp4");
-  await run("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", join(o.workDir, "list.txt"), "-i", o.input,
-    "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", file], { maxBuffer: 1 << 24 });
+  await run("ffmpeg", ["-v", "error", "-y", ...LOCAL_ONLY, "-f", "concat", "-safe", "0", "-i", join(o.workDir, "list.txt"),
+    ...LOCAL_ONLY, "-i", o.input,
+    "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-c:a", "aac", "-shortest", "-movflags", "+faststart", file], { maxBuffer: 1 << 24, timeout: 30 * MINUTE });
   return { file, gpuSeconds: Math.round(gpuSeconds * 10) / 10 };
 }

@@ -35,7 +35,7 @@ import { History } from "./history.ts";
 import { Flags } from "./flags.ts";
 import { DOOR_HTML, foreign, Guard } from "./guard.ts";
 import { Accounts, AuthError, type User } from "./accounts.ts";
-import { CHUNK_OVER_SECONDS, CHUNKED_APPS, probe, runChunked } from "./chunked.ts";
+import { checkClip, CHUNK_OVER_SECONDS, CHUNKED_APPS, probe, runChunked } from "./chunked.ts";
 
 const root = repoRoot();
 const { apps, problems } = loadRegistry(root);
@@ -193,17 +193,16 @@ async function jobView(id: string) {
   };
 }
 
-/** A clip too long to run whole (server/chunked.ts), or null. Without ffprobe every clip runs whole, as before. */
+/** A clip too long to run whole (server/chunked.ts), or null; throws when the clip breaks the limits or is not a video. */
 async function longClip(app: App, entry: ReturnType<typeof history.start>) {
   if (!CHUNKED_APPS.has(app.id)) return null;
   const inputId = app.inputs.find((i) => i.type === "video")?.id;
   const path = inputId ? history.inputPath(entry, inputId) : null;
   if (!inputId || !path) return null;
-  try {
-    return (await probe(path)).duration > CHUNK_OVER_SECONDS ? { inputId, path } : null;
-  } catch {
-    return null;
-  }
+  const meta = await probe(path);   // throws for files that are not a plain video: the run fails with that reason
+  const refused = checkClip(app, inputId, meta);
+  if (refused) throw new InputError(refused);
+  return meta.duration > CHUNK_OVER_SECONDS ? { inputId, path } : null;
 }
 
 /** Submit in the background; the entry tells the UI how it goes. */
